@@ -49,19 +49,11 @@ prek install
 ```
 
 **Pre-commit checks (auto-run on commit):**
+
 - `cargo +nightly fmt --all -- --check` - formatting (uses nightly for advanced features)
 - `cargo clippy --all-targets -- -D warnings` - linting
 - `cargo check --workspace` - type checking
 - `cargo test --lib` - fast unit tests
-
-**Pre-push setup (optional):**
-
-```bash
-cp hooks/pre-push .git/hooks/pre-push
-chmod +x .git/hooks/pre-push
-```
-
-Pre-push runs full test suite: `cargo test --all`
 
 **Manual execution:**
 
