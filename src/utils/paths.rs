@@ -266,7 +266,20 @@ pub fn safe_open_file(path: &Path) -> Result<File> {
 
     #[cfg(not(unix))]
     {
-        // Windows: less comprehensive but still safe
+        use std::os::windows::fs::MetadataExt;
+
+        // Inspect metadata without following symlinks (best-effort TOCTOU mitigation)
+        let pre_metadata = std::fs::symlink_metadata(path)
+            .with_context(|| format!("Failed to read metadata for: {}", path.display()))?;
+
+        if pre_metadata.file_type().is_symlink() {
+            bail!("{} is a symbolic link (symlinks not allowed for security)", path.display());
+        }
+
+        if !pre_metadata.is_file() {
+            bail!("{} is not a regular file", path.display());
+        }
+
         let file =
             File::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
 
@@ -278,6 +291,14 @@ pub fn safe_open_file(path: &Path) -> Result<File> {
 
         if !metadata.is_file() {
             bail!("{} is not a regular file", path.display());
+        }
+
+        if metadata.number_of_links() > 1 {
+            bail!(
+                "{} has {} hard links (possible hardlink attack)",
+                path.display(),
+                metadata.number_of_links()
+            );
         }
 
         Ok(file)
@@ -866,5 +887,39 @@ mod tests {
         let decoded = decode_path(&encoded);
 
         assert_eq!(decoded, path, "Should preserve multiple trailing slashes");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_safe_open_file_rejects_symlink_windows() {
+        use std::os::windows::fs::symlink_file;
+
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let target = temp_dir.path().join("target.jsonl");
+        std::fs::write(&target, b"test").unwrap();
+
+        let link = temp_dir.path().join("link.jsonl");
+        symlink_file(&target, &link).unwrap();
+
+        let result = safe_open_file(&link);
+        assert!(result.is_err(), "safe_open_file should reject symbolic links on Windows");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_safe_open_file_rejects_hardlink_windows() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let target = temp_dir.path().join("target.jsonl");
+        std::fs::write(&target, b"test").unwrap();
+
+        let link = temp_dir.path().join("link.jsonl");
+        std::fs::hard_link(&target, &link).unwrap();
+
+        let result = safe_open_file(&link);
+        assert!(result.is_err(), "safe_open_file should reject hard links on Windows");
     }
 }
