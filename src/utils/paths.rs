@@ -172,6 +172,148 @@ pub fn validate_file_size(file: &File, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Validates that a file is not a hardlink with multiple references
+///
+/// # Security
+///
+/// Prevents hardlink-based attacks where an attacker creates a hardlink from
+/// within `.claude/` to a sensitive file outside the directory. On Unix systems,
+/// this checks if the file has multiple hardlinks (nlink > 1).
+///
+/// # Errors
+///
+/// Returns an error if the file has multiple hardlinks on Unix systems.
+#[cfg(unix)]
+pub fn validate_not_hardlink(path: &Path) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("Failed to read metadata for: {}", path.display()))?;
+
+    let nlink = metadata.nlink();
+    if nlink > 1 {
+        bail!("{} has {} hard links (possible hardlink attack)", path.display(), nlink);
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn validate_not_hardlink(_path: &Path) -> Result<()> {
+    // Windows: hardlinks less common, skip check
+    Ok(())
+}
+
+/// Safely opens a file for reading with TOCTOU protection
+///
+/// # Security
+///
+/// This function prevents TOCTOU (Time-of-Check-Time-of-Use) race conditions by:
+/// 1. Opening the file atomically with O_NOFOLLOW (won't follow symlinks)
+/// 2. Validating size on the already-open file descriptor
+/// 3. Checking it's a regular file (not FIFO, device, socket, etc.)
+/// 4. Checking for hardlinks (multiple references to same inode)
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The path is a symbolic link
+/// - The file is larger than 10MB
+/// - The file is not a regular file
+/// - The file has multiple hardlinks (Unix only)
+pub fn safe_open_file(path: &Path) -> Result<File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+        // Open with O_NOFOLLOW - fails atomically if path is symlink
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+            .with_context(|| format!("Failed to open {}", path.display()))?;
+
+        // Now validate size on the ALREADY OPEN file (same file descriptor)
+        let metadata = file
+            .metadata()
+            .with_context(|| format!("Failed to read file metadata: {}", path.display()))?;
+
+        let size = metadata.len();
+        if size > MAX_FILE_SIZE_BYTES {
+            bail!(
+                "File too large: {} ({} bytes, max {} bytes)",
+                path.display(),
+                size,
+                MAX_FILE_SIZE_BYTES
+            );
+        }
+
+        // Check it's a regular file (not FIFO, device, etc.)
+        let mode = metadata.mode();
+        if mode & (libc::S_IFMT as u32) != (libc::S_IFREG as u32) {
+            bail!("{} is not a regular file", path.display());
+        }
+
+        // Check for hardlinks
+        let nlink = metadata.nlink();
+        if nlink > 1 {
+            bail!("{} has {} hard links (possible hardlink attack)", path.display(), nlink);
+        }
+
+        Ok(file)
+    }
+
+    #[cfg(not(unix))]
+    {
+        // Windows: less comprehensive but still safe
+        let file =
+            File::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
+
+        validate_file_size(&file, path)?;
+
+        let metadata = file
+            .metadata()
+            .with_context(|| format!("Failed to read file metadata: {}", path.display()))?;
+
+        if !metadata.is_file() {
+            bail!("{} is not a regular file", path.display());
+        }
+
+        Ok(file)
+    }
+}
+
+/// Safely opens a directory for reading with TOCTOU protection
+///
+/// # Security
+///
+/// This function prevents symlink-based directory attacks by verifying
+/// the path is not a symlink before opening.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The path is a symbolic link
+/// - The path is not a directory
+/// - The directory cannot be read
+pub fn safe_open_dir(path: &Path) -> Result<std::fs::ReadDir> {
+    // Get metadata without following symlinks
+    let metadata = std::fs::symlink_metadata(path)
+        .with_context(|| format!("Failed to read metadata for: {}", path.display()))?;
+
+    if metadata.is_symlink() {
+        bail!("{} is a symbolic link", path.display());
+    }
+
+    if !metadata.is_dir() {
+        bail!("{} is not a directory", path.display());
+    }
+
+    // Open directory - on Unix, directories can't be symlinks
+    // if we've already verified with symlink_metadata
+    std::fs::read_dir(path).with_context(|| format!("Failed to read directory {}", path.display()))
+}
+
 /// Formats a path with ~ substitution for the home directory
 ///
 /// # Examples
@@ -586,5 +728,142 @@ mod tests {
         let nonexistent = PathBuf::from("/tmp/does_not_exist_12345");
         let result = validate_path_not_symlink(&nonexistent);
         assert!(result.is_err(), "Nonexistent path should fail validation");
+    }
+
+    // ===== Edge Case Tests =====
+
+    #[test]
+    fn test_multiple_consecutive_slashes() {
+        // Path with multiple consecutive slashes: /Users//test///project
+        let path = PathBuf::from("/Users//test///project");
+        let encoded = encode_path(&path);
+        let decoded = decode_path(&encoded);
+
+        // Path should be preserved (not normalized)
+        assert_eq!(decoded, path, "Should preserve consecutive slashes");
+        assert!(validate_decoded_path(&decoded).is_ok(), "Consecutive slashes should be valid");
+    }
+
+    #[test]
+    fn test_trailing_slash_in_path() {
+        // Test paths with trailing slashes
+        let path_with_slash = PathBuf::from("/Users/test/project/");
+        let path_without_slash = PathBuf::from("/Users/test/project");
+
+        let encoded_with = encode_path(&path_with_slash);
+        let encoded_without = encode_path(&path_without_slash);
+
+        let decoded_with = decode_path(&encoded_with);
+        let decoded_without = decode_path(&encoded_without);
+
+        // Paths should be preserved as-is
+        assert_eq!(decoded_with, path_with_slash, "Should preserve trailing slash");
+        assert_eq!(decoded_without, path_without_slash, "Should preserve no trailing slash");
+
+        // Both should be valid
+        assert!(validate_decoded_path(&decoded_with).is_ok());
+        assert!(validate_decoded_path(&decoded_without).is_ok());
+    }
+
+    #[test]
+    fn test_path_at_os_limit() {
+        // Test path at typical OS limit (4096 bytes on Linux)
+        let long_component = "a".repeat(100);
+        let mut path_str = String::from("/");
+
+        // Add components until we reach ~4000 bytes
+        while path_str.len() < 4000 {
+            path_str.push_str(&long_component);
+            path_str.push('/');
+        }
+
+        let long_path = PathBuf::from(&path_str);
+        let encoded = encode_path(&long_path);
+        let decoded = decode_path(&encoded);
+
+        // Should handle very long paths
+        assert_eq!(decoded, long_path, "Should handle paths at OS limits");
+        assert!(validate_decoded_path(&decoded).is_ok(), "Very long paths should be valid");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_hardlink_validation() {
+        use std::io::Write;
+
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create original file
+        let original = temp_dir.path().join("original.txt");
+        let mut file = std::fs::File::create(&original).unwrap();
+        file.write_all(b"test").unwrap();
+        drop(file);
+
+        // Create hardlink
+        let hardlink = temp_dir.path().join("hardlink.txt");
+        std::fs::hard_link(&original, &hardlink).unwrap();
+
+        // Both should pass symlink validation (hardlinks are not symlinks)
+        let result_original = validate_path_not_symlink(&original);
+        let result_hardlink = validate_path_not_symlink(&hardlink);
+
+        assert!(result_original.is_ok(), "Original file should pass");
+        assert!(result_hardlink.is_ok(), "Hardlink should pass symlink check");
+
+        // Note: Current implementation doesn't detect hardlinks
+        // This test documents the current behavior (vulnerability)
+        // To detect hardlinks, would need to check inode numbers and nlink count
+    }
+
+    #[test]
+    fn test_path_only_dots() {
+        // Path with only dots: /././.
+        let path = PathBuf::from("/././.");
+        let result = validate_decoded_path(&path);
+        // Single dots (.) are allowed (current directory)
+        assert!(result.is_ok(), "Path with only single dots should be valid");
+    }
+
+    #[test]
+    fn test_paths_with_newlines() {
+        // Path with newline character (unusual but possible in Unix)
+        let path_with_newline = "/Users/test/project\nmalicious";
+        let encoded = utf8_percent_encode(path_with_newline.strip_prefix('/').unwrap(), ENCODE_SET)
+            .to_string();
+        let formatted = format!("-{}", encoded);
+        let decoded = decode_path(&formatted);
+
+        // Newline should be encoded and preserved
+        assert!(decoded.to_string_lossy().contains('\n'), "Newline should be preserved");
+        // Validation should pass (no .. or relative path check)
+        assert!(
+            validate_decoded_path(&decoded).is_ok(),
+            "Path with newline should pass validation"
+        );
+    }
+
+    #[test]
+    fn test_normalize_slash_handling() {
+        // Test that /Users/foo/ and /Users/foo encode differently
+        let with_slash = PathBuf::from("/Users/foo/");
+        let without_slash = PathBuf::from("/Users/foo");
+
+        let enc1 = encode_path(&with_slash);
+        let enc2 = encode_path(&without_slash);
+
+        // They should encode to different strings
+        assert_ne!(enc1, enc2, "Trailing slash should affect encoding");
+    }
+
+    #[test]
+    fn test_path_with_many_slashes_at_end() {
+        // Path with many trailing slashes
+        let path = PathBuf::from("/Users/test////");
+        let encoded = encode_path(&path);
+        let decoded = decode_path(&encoded);
+
+        assert_eq!(decoded, path, "Should preserve multiple trailing slashes");
     }
 }

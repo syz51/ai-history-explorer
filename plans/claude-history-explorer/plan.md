@@ -45,13 +45,14 @@ Implement system clipboard copying using platform-specific tools (pbcopy on macO
 - ✅ Add graceful degradation with >50% failure threshold
 - ✅ Add tests for JSONL parsing, path encoding, index building
 - ✅ **Security hardening** (6 protections: symlink validation, JSON depth, resource limits, file size, path traversal, terminal sanitization)
-- ✅ **Comprehensive test suite** (178 tests: 125 unit + 47 integration + 6 doctests)
+- ✅ **Comprehensive test suite** (201 tests: 139 unit + 9 CLI + 16 edge + 20 integration + 11 security + 6 doctests)
 - ✅ **Test coverage enforcement** (97.03% achieved, 90%+ target in pre-commit hooks)
 - ✅ **Code review fixes** (21/22 issues resolved, 1 deferred)
+- ✅ **Content block integration tests** (9 new tests covering thinking/tool_use/tool_result/image blocks, truncation, DoS protection, performance)
 
-**Phase 1 Completion Stats** (2025-01-21):
+**Phase 1 Completion Stats** (2025-01-21, updated 2025-11-21):
 
-- **178 tests passing** (100% pass rate)
+- **201 tests passing** (100% pass rate)
 - **97.03% code coverage** (98.48% line coverage)
 - **Zero clippy warnings**
 - **21/22 issues fixed** (1 deferred to Phase 2: Windows support)
@@ -90,25 +91,57 @@ Implement system clipboard copying using platform-specific tools (pbcopy on macO
 
 **Performance Enhancements**:
 
+- [ ] **Performance baseline benchmarking** (prerequisite for optimizations)
+  - [ ] Install criterion crate for formal benchmarks
+  - [ ] Benchmark realistic datasets (10K, 100K, 1M entries)
+  - [ ] Document baseline metrics (see Unresolved Decisions below)
+  - [ ] Establish thresholds for optimization ROI
 - [ ] **Parallel agent file parsing** (high impact)
   - [ ] Use rayon for concurrent parsing
-  - [ ] Benchmark performance gain
+  - [ ] Benchmark performance gain vs baseline
 - [ ] **Streaming instead of full memory load** (medium impact)
   - [ ] Stream entries instead of collect() into Vec
   - [ ] Lazy evaluation for large datasets
 - [ ] **Preview text lazy loading** (low impact)
   - [ ] Only load preview when displayed
 
-**Testing & Quality** (optional):
+**Testing & Quality**:
 
-- [ ] **Performance benchmarks**
-  - [ ] Install criterion crate
-  - [ ] Benchmark parsing 10K, 100K, 1M entries
-  - [ ] Track regression in CI
-- [ ] **Concurrent access tests**
-  - [ ] Multiple processes reading ~/.claude/ simultaneously
-  - [ ] File modification during parsing edge cases
-- [ ] **Fuzzing** (advanced)
+✅ **Test Coverage Improvements** (Completed 2025-11-21):
+
+- Added 5 critical security tests:
+  - Symlink TOCTOU race condition (Unix-only)
+  - Memory exhaustion with 100K entries (scaled test, marked #[ignore])
+  - Integer overflow in line counting
+  - NULL byte handling in encoded paths
+  - JSON recursion depth limit (129+ levels)
+- Added 5 critical edge case tests:
+  - Non-BMP Unicode in paths (supplementary plane U+10000+)
+  - Concurrent file modification during read (Unix-only)
+  - Empty content blocks array
+  - Negative timestamps (before Unix epoch)
+  - Timestamp millisecond precision boundaries
+- **Windows Compatibility Notes**:
+  - Current security/edge tests focus on Unix systems
+  - Windows support deferred to Phase 2+ will require:
+    - Symlink tests: Windows CreateSymbolicLink API differs from Unix
+    - Path handling: NULL byte behavior may vary
+    - Concurrent file access: Different locking semantics
+    - All tests marked `#[cfg(unix)]` need Windows equivalents
+
+**Performance Testing** (deferred to Phase 2+):
+
+- [ ] Formal benchmarking with criterion crate
+- [ ] Baseline metrics: 10K, 100K, 1M entries
+- [ ] Sorting performance at scale
+- [ ] Serial vs parallel file processing
+- [ ] Memory usage profiling
+- Rationale: Current 1000-entry perf test has arbitrary <2s threshold
+- Need: Establish data-driven baselines before optimization decisions
+
+**Advanced Testing** (optional):
+
+- [ ] **Fuzzing**
   - [ ] Install cargo-fuzz
   - [ ] Fuzz parsers with AFL/libfuzzer
   - [ ] Target: malformed JSONL, extreme nesting, encoding attacks
@@ -226,3 +259,44 @@ The data model below is **reverse-engineered from local files**, not from offici
 
 - Preview lazy loading implementation strategy (defer to Phase 2)
 - Field filter syntax precedence details (defer to Phase 2+)
+
+**Recent Updates (2025-11-21):**
+
+**Content Block Integration Tests:**
+Added 9 comprehensive tests for recent content block & truncation features:
+
+- Content blocks E2E (thinking/tool_use/tool_result/image)
+- Truncation markers (>1KB thinking, >4KB tool inputs)
+- Assistant-only conversations
+- Multi-byte Unicode truncation (emoji/CJK)
+- Empty content filtering
+- DoS protection (10K-field JSON)
+- Performance benchmark (1000 entries <2s)
+- Memory stress (100K entries)
+- Content type combinations (all 5 blocks)
+
+**Unresolved Design Decisions:**
+
+1. **Performance benchmarks for decision-making:**
+
+   - **Issue**: Current performance test has arbitrary <2s threshold for 1000 entries
+   - **Need**: Establish baseline performance metrics with larger datasets before making optimization decisions
+   - **Action items**:
+     - [ ] Run performance benchmarks on realistic datasets (10K, 100K, 1M entries)
+     - [ ] Document baseline metrics (parse time, memory usage, throughput)
+     - [ ] Set performance thresholds based on actual data
+     - [ ] Use benchmarks to evaluate parallel parsing ROI (rayon)
+   - **Status**: Deferred to Phase 2+ performance optimization
+   - **Context**: Current memory stress test (100K entries) provides data point, but formal benchmarking needed
+
+2. **Whitespace-only content filtering:**
+   - **Current behavior**: Filters `is_empty()` but NOT `trim().is_empty()`
+   - **Result**: Whitespace-only entries (" ") are indexed
+   - **Rationale**: Unknown - may be intentional to preserve all non-empty messages
+   - **Options**:
+     - Keep current behavior (preserves whitespace-only messages)
+     - Filter `trim().is_empty()` (removes whitespace-only messages)
+   - **Decision**: Keep current behavior for now
+   - **Reason**: May be edge case in real data; change if users report issues
+   - **Location**: `src/indexer/builder.rs:338`
+   - **Test coverage**: `test_e2e_empty_content_filtering` validates current behavior

@@ -14,6 +14,6 @@ pub mod history;
 pub mod project;
 pub mod search;
 
-pub use history::{ConversationEntry, HistoryEntry, Message, MessageContent};
+pub use history::{ContentBlock, ConversationEntry, HistoryEntry, Message, MessageContent};
 pub use project::ProjectInfo;
 pub use search::{EntryType, SearchEntry};

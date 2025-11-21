@@ -1,20 +1,17 @@
-use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
 use crate::models::HistoryEntry;
-use crate::utils::validate_file_size;
+use crate::utils::safe_open_file;
 
 /// Parse history.jsonl file and return list of history entries
 /// Gracefully handles malformed lines by logging and skipping them
 /// Returns an error if more than 50% of lines fail to parse or >100 consecutive errors
 pub fn parse_history_file(path: &Path) -> Result<Vec<HistoryEntry>> {
-    // Open file and validate size to avoid TOCTOU race condition
-    let file = File::open(path)
-        .with_context(|| format!("Failed to open history file: {}", path.display()))?;
-    validate_file_size(&file, path)?;
+    // Safely open file with TOCTOU protection and validation
+    let file = safe_open_file(path)?;
 
     let reader = BufReader::new(file);
     let mut entries = Vec::new();
@@ -473,5 +470,131 @@ invalid line 2"#;
         assert!(result.is_ok(), "Should handle moderately nested JSON");
         let entries = result.unwrap();
         assert_eq!(entries.len(), 1, "Moderately nested entry should be parsed");
+    }
+
+    // ===== Edge Case Tests =====
+
+    #[test]
+    fn test_parse_utf8_bom_at_file_start() {
+        // Test UTF-8 BOM (Byte Order Mark: 0xEF 0xBB 0xBF) at start of file
+        let content_with_bom = format!(
+            "\u{FEFF}{}",
+            r#"{"display":"After BOM","timestamp":1234567890,"sessionId":"550e8400-e29b-41d4-a716-446655440000"}"#
+        );
+
+        let file = create_test_file(&content_with_bom);
+        let result = parse_history_file(file.path());
+
+        // BOM may cause parse failure or be skipped by serde_json
+        // Both outcomes are acceptable as long as no crash
+        if let Ok(entries) = result {
+            // May have 0 entries (BOM broke parse) or 1 entry (BOM handled)
+            assert!(entries.len() <= 1, "Should handle or skip BOM");
+        }
+    }
+
+    #[test]
+    fn test_parse_float_timestamp() {
+        // Test that float timestamps are rejected or handled
+        let content = r#"{"display":"Float timestamp","timestamp":1234.567,"sessionId":"550e8400-e29b-41d4-a716-446655440000"}"#;
+
+        let file = create_test_file(content);
+        let result = parse_history_file(file.path());
+
+        // Either parsing fails (timestamp deserialization error) or succeeds with 0 entries
+        // serde_json will reject float for i64 field
+        if let Ok(entries) = result {
+            // If we got here, the line was skipped due to parse error
+            assert_eq!(entries.len(), 0, "Float timestamp should cause parse error and skip line");
+        }
+        // If result is Err, that's also acceptable - catastrophic parse failure
+    }
+
+    #[test]
+    fn test_parse_i64_max_timestamp() {
+        // Test timestamp at i64::MAX boundary
+        // Note: DateTime::from_timestamp_millis() has a limited range
+        // i64::MAX is outside the valid DateTime range
+        // Need to add a valid line to keep failure rate < 50%
+        let content = format!(
+            r#"{{"display":"MAX timestamp","timestamp":{},"sessionId":"550e8400-e29b-41d4-a716-446655440000"}}
+{{"display":"Valid","timestamp":1000,"sessionId":"550e8400-e29b-41d4-a716-446655440001"}}"#,
+            i64::MAX
+        );
+
+        let file = create_test_file(&content);
+        let result = parse_history_file(file.path());
+
+        // i64::MAX is out of range for DateTime, so that line will be skipped
+        assert!(result.is_ok(), "Should not crash on out-of-range timestamp");
+        let entries = result.unwrap();
+        assert_eq!(
+            entries.len(),
+            1,
+            "Out-of-range timestamp line should be skipped, valid line parsed"
+        );
+        assert_eq!(entries[0].display, "Valid");
+    }
+
+    #[test]
+    fn test_parse_i64_min_timestamp() {
+        // Test timestamp at i64::MIN boundary
+        // Note: DateTime::from_timestamp_millis() has a limited range
+        // i64::MIN is outside the valid DateTime range
+        // Need to add a valid line to keep failure rate < 50%
+        let content = format!(
+            r#"{{"display":"MIN timestamp","timestamp":{},"sessionId":"550e8400-e29b-41d4-a716-446655440000"}}
+{{"display":"Valid","timestamp":2000,"sessionId":"550e8400-e29b-41d4-a716-446655440001"}}"#,
+            i64::MIN
+        );
+
+        let file = create_test_file(&content);
+        let result = parse_history_file(file.path());
+
+        // i64::MIN is out of range for DateTime, so that line will be skipped
+        assert!(result.is_ok(), "Should not crash on out-of-range timestamp");
+        let entries = result.unwrap();
+        assert_eq!(
+            entries.len(),
+            1,
+            "Out-of-range timestamp line should be skipped, valid line parsed"
+        );
+        assert_eq!(entries[0].display, "Valid");
+    }
+
+    #[test]
+    fn test_parse_whitespace_only_display() {
+        // Test that whitespace-only display text is preserved
+        // Current implementation: filters is_empty(), not trim().is_empty()
+        let content = r#"{"display":"   ","timestamp":1234567890,"sessionId":"550e8400-e29b-41d4-a716-446655440000"}
+{"display":"\t\n  ","timestamp":1234567891,"sessionId":"550e8400-e29b-41d4-a716-446655440001"}
+{"display":"Valid","timestamp":1234567892,"sessionId":"550e8400-e29b-41d4-a716-446655440002"}"#;
+
+        let file = create_test_file(content);
+        let result = parse_history_file(file.path());
+
+        assert!(result.is_ok(), "Should parse whitespace-only display");
+        let entries = result.unwrap();
+        // Current behavior: whitespace-only entries are included
+        assert_eq!(entries.len(), 3, "Whitespace-only entries are not filtered");
+    }
+
+    #[test]
+    fn test_parse_year_10000_timestamp() {
+        // Test very far future timestamp (year 10000+)
+        // Year 10000-01-01 ≈ 253402300800000 milliseconds
+        let far_future = 253402300800000i64;
+        let content = format!(
+            r#"{{"display":"Far future","timestamp":{},"sessionId":"550e8400-e29b-41d4-a716-446655440000"}}"#,
+            far_future
+        );
+
+        let file = create_test_file(&content);
+        let result = parse_history_file(file.path());
+
+        assert!(result.is_ok(), "Should handle far future timestamps");
+        let entries = result.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].display, "Far future");
     }
 }

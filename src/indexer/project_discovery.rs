@@ -1,10 +1,9 @@
-use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
 use crate::models::ProjectInfo;
-use crate::utils::{decode_and_validate_path, validate_path_not_symlink};
+use crate::utils::{decode_and_validate_path, safe_open_dir, validate_path_not_symlink};
 
 /// Maximum number of projects to process (security: prevent resource exhaustion)
 const MAX_PROJECTS: usize = 1000;
@@ -47,9 +46,8 @@ pub fn discover_projects(claude_dir: &Path) -> Result<Vec<ProjectInfo>> {
 
     let mut projects = Vec::new();
 
-    // Iterate through all entries in the projects directory
-    let entries = fs::read_dir(&projects_dir)
-        .context(format!("Failed to read projects directory: {}", projects_dir.display()))?;
+    // Safely open projects directory with symlink protection
+    let entries = safe_open_dir(&projects_dir)?;
 
     for entry in entries {
         let entry = entry.context("Failed to read directory entry")?;
@@ -94,7 +92,7 @@ pub fn discover_projects(claude_dir: &Path) -> Result<Vec<ProjectInfo>> {
 
         // Find all agent-*.jsonl files in this project directory
         let mut agent_files = Vec::new();
-        match fs::read_dir(&path) {
+        match safe_open_dir(&path) {
             Ok(files) => {
                 for file in files.flatten() {
                     let file_path = file.path();

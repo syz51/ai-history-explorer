@@ -247,8 +247,8 @@ fn test_edge_case_empty_display_text() {
     assert!(result.is_ok(), "Should handle empty display text");
 
     let index = result.unwrap();
-    assert_eq!(index.len(), 1);
-    assert_eq!(index[0].display_text, "");
+    // Empty display text is filtered out (not useful for search)
+    assert_eq!(index.len(), 0, "Empty display text should be filtered");
 }
 
 #[test]

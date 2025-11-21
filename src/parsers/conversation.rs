@@ -1,20 +1,17 @@
-use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
 use crate::models::ConversationEntry;
-use crate::utils::validate_file_size;
+use crate::utils::safe_open_file;
 
 /// Parse a conversation JSONL file (agent or session file)
 /// Gracefully handles malformed lines by logging and skipping them
 /// Returns an error if more than 50% of lines fail to parse or >100 consecutive errors
 pub fn parse_conversation_file(path: &Path) -> Result<Vec<ConversationEntry>> {
-    // Open file and validate size to avoid TOCTOU race condition
-    let file = File::open(path)
-        .with_context(|| format!("Failed to open conversation file: {}", path.display()))?;
-    validate_file_size(&file, path)?;
+    // Safely open file with TOCTOU protection and validation
+    let file = safe_open_file(path)?;
 
     let reader = BufReader::new(file);
     let mut entries = Vec::new();
@@ -195,5 +192,70 @@ invalid line 3"#;
             Some("550e8400-e29b-41d4-a716-446655440000".to_string())
         );
         assert_eq!(entries[0].is_sidechain, Some(true));
+    }
+
+    #[test]
+    fn test_parse_conversation_with_string_content() {
+        let content = r#"{"type":"user","message":{"role":"user","content":"Simple string content"},"timestamp":1234567890,"sessionId":"550e8400-e29b-41d4-a716-446655440000","uuid":"550e8400-e29b-41d4-a716-446655440001"}"#;
+
+        let file = create_test_file(content);
+        let result = parse_conversation_file(file.path());
+
+        assert!(result.is_ok());
+        let entries = result.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].entry_type, "user");
+        assert_eq!(entries[0].message.role, "user");
+    }
+
+    #[test]
+    fn test_parse_conversation_with_thinking_blocks() {
+        let content = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Let me think..."},{"type":"text","text":"Here's my answer"}]},"timestamp":1234567890,"sessionId":"550e8400-e29b-41d4-a716-446655440000","uuid":"550e8400-e29b-41d4-a716-446655440001"}"#;
+
+        let file = create_test_file(content);
+        let result = parse_conversation_file(file.path());
+
+        assert!(result.is_ok());
+        let entries = result.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].message.role, "assistant");
+    }
+
+    #[test]
+    fn test_parse_conversation_with_tool_use_blocks() {
+        let content = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool_123","name":"read_file","input":{"path":"/test/file.txt"}}]},"timestamp":1234567890,"sessionId":"550e8400-e29b-41d4-a716-446655440000","uuid":"550e8400-e29b-41d4-a716-446655440001"}"#;
+
+        let file = create_test_file(content);
+        let result = parse_conversation_file(file.path());
+
+        assert!(result.is_ok());
+        let entries = result.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].message.role, "assistant");
+    }
+
+    #[test]
+    fn test_parse_conversation_with_tool_result_blocks() {
+        let content = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool_123","content":"File contents here"}]},"timestamp":1234567890,"sessionId":"550e8400-e29b-41d4-a716-446655440000","uuid":"550e8400-e29b-41d4-a716-446655440001"}"#;
+
+        let file = create_test_file(content);
+        let result = parse_conversation_file(file.path());
+
+        assert!(result.is_ok());
+        let entries = result.unwrap();
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_conversation_with_mixed_content_blocks() {
+        let content = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Analyzing..."},{"type":"text","text":"Answer:"},{"type":"tool_use","id":"tool_456","name":"search","input":{"query":"test"}}]},"timestamp":1234567890,"sessionId":"550e8400-e29b-41d4-a716-446655440000","uuid":"550e8400-e29b-41d4-a716-446655440001"}"#;
+
+        let file = create_test_file(content);
+        let result = parse_conversation_file(file.path());
+
+        assert!(result.is_ok());
+        let entries = result.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].message.role, "assistant");
     }
 }

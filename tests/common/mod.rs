@@ -159,10 +159,16 @@ impl AgentFileBuilder {
 pub struct ConversationEntryBuilder {
     entry_type: String,
     role: String,
-    text: String,
+    content: ContentType,
     timestamp: i64,
     session_id: String,
     uuid: String,
+}
+
+/// Content type for conversation entries
+enum ContentType {
+    Text(String),
+    ContentBlocks(Vec<String>),
 }
 
 impl ConversationEntryBuilder {
@@ -171,7 +177,7 @@ impl ConversationEntryBuilder {
         Self {
             entry_type: "user".to_string(),
             role: "user".to_string(),
-            text: "Test message".to_string(),
+            content: ContentType::Text("Test message".to_string()),
             timestamp: 1234567890,
             session_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             uuid: "550e8400-e29b-41d4-a716-446655440001".to_string(),
@@ -183,17 +189,55 @@ impl ConversationEntryBuilder {
         Self {
             entry_type: "assistant".to_string(),
             role: "assistant".to_string(),
-            text: "Test response".to_string(),
+            content: ContentType::Text("Test response".to_string()),
             timestamp: 1234567891,
             session_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             uuid: "550e8400-e29b-41d4-a716-446655440002".to_string(),
         }
     }
 
-    /// Set the message text
+    /// Set the message text (simple text content)
     pub fn text(mut self, text: &str) -> Self {
-        self.text = text.to_string();
+        self.content = ContentType::Text(text.to_string());
         self
+    }
+
+    /// Set content blocks (advanced content with thinking, tool_use, etc.)
+    pub fn content_blocks(mut self, blocks: Vec<String>) -> Self {
+        self.content = ContentType::ContentBlocks(blocks);
+        self
+    }
+
+    /// Add a thinking block
+    pub fn thinking_block(text: &str) -> String {
+        format!(r#"{{"type":"thinking","thinking":"{}"}}"#, text)
+    }
+
+    /// Add a tool_use block
+    pub fn tool_use_block(id: &str, name: &str, input_json: &str) -> String {
+        format!(r#"{{"type":"tool_use","id":"{}","name":"{}","input":{}}}"#, id, name, input_json)
+    }
+
+    /// Add a tool_result block
+    pub fn tool_result_block(tool_use_id: &str, content_json: &str, is_error: bool) -> String {
+        format!(
+            r#"{{"type":"tool_result","tool_use_id":"{}","content":{},"is_error":{}}}"#,
+            tool_use_id, content_json, is_error
+        )
+    }
+
+    /// Add an image block
+    pub fn image_block(source_json: &str, alt_text: Option<&str>) -> String {
+        if let Some(alt) = alt_text {
+            format!(r#"{{"type":"image","source":{},"alt_text":"{}"}}"#, source_json, alt)
+        } else {
+            format!(r#"{{"type":"image","source":{}}}"#, source_json)
+        }
+    }
+
+    /// Add a text block (for use in content blocks array)
+    pub fn text_block(text: &str) -> String {
+        format!(r#"{{"type":"text","text":"{}"}}"#, text)
     }
 
     /// Set the timestamp
@@ -216,9 +260,18 @@ impl ConversationEntryBuilder {
 
     /// Convert to JSON string
     pub fn to_json(&self) -> String {
+        let content_json = match &self.content {
+            ContentType::Text(text) => {
+                format!(r#"[{{"type":"text","text":"{}"}}]"#, text)
+            }
+            ContentType::ContentBlocks(blocks) => {
+                format!("[{}]", blocks.join(","))
+            }
+        };
+
         format!(
-            r#"{{"type":"{}","message":{{"role":"{}","content":[{{"type":"text","text":"{}"}}]}},"timestamp":{},"sessionId":"{}","uuid":"{}"}}"#,
-            self.entry_type, self.role, self.text, self.timestamp, self.session_id, self.uuid
+            r#"{{"type":"{}","message":{{"role":"{}","content":{}}},"timestamp":{},"sessionId":"{}","uuid":"{}"}}"#,
+            self.entry_type, self.role, content_json, self.timestamp, self.session_id, self.uuid
         )
     }
 }
