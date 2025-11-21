@@ -15,8 +15,8 @@ repos:
         args: ["--all-targets", "--", "-D", "warnings"]
   - repo: local
     hooks:
-      - id: test-lib
-        name: Run fast unit tests
-        entry: cargo test --lib
+      - id: coverage
+        name: Run tests with coverage check (90%+ required)
+        entry: cargo llvm-cov --all-features --workspace --fail-under-lines 90
         language: system
         pass_filenames: false

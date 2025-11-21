@@ -3,3 +3,8 @@
 # Added by cargo
 
 /target
+
+# Coverage reports
+lcov.info
+*.profraw
+*.profdata

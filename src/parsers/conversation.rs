@@ -85,3 +85,115 @@ pub fn parse_conversation_file(path: &Path) -> Result<Vec<ConversationEntry>> {
 
     Ok(entries)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    use tempfile::NamedTempFile;
+
+    use super::*;
+
+    /// Helper to create a temporary test file with given content
+    fn create_test_file(content: &str) -> NamedTempFile {
+        let mut file = NamedTempFile::new().expect("Failed to create temp file");
+        file.write_all(content.as_bytes()).expect("Failed to write to temp file");
+        file.flush().expect("Failed to flush temp file");
+        file
+    }
+
+    #[test]
+    fn test_parse_valid_conversation_entries() {
+        let content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Hello"}]},"timestamp":1234567890,"sessionId":"550e8400-e29b-41d4-a716-446655440000","uuid":"550e8400-e29b-41d4-a716-446655440001"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hi there"}]},"timestamp":"2024-01-15T10:30:00Z","sessionId":"550e8400-e29b-41d4-a716-446655440000","uuid":"550e8400-e29b-41d4-a716-446655440002"}"#;
+
+        let file = create_test_file(content);
+        let result = parse_conversation_file(file.path());
+
+        assert!(result.is_ok());
+        let entries = result.unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].entry_type, "user");
+        assert_eq!(entries[0].message.role, "user");
+        assert_eq!(entries[1].entry_type, "assistant");
+    }
+
+    #[test]
+    fn test_parse_empty_conversation_file() {
+        let content = "";
+        let file = create_test_file(content);
+        let result = parse_conversation_file(file.path());
+
+        assert!(result.is_ok());
+        let entries = result.unwrap();
+        assert_eq!(entries.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_skips_malformed_conversation_lines() {
+        let content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Valid 1"}]},"timestamp":1234567890,"sessionId":"550e8400-e29b-41d4-a716-446655440000","uuid":"550e8400-e29b-41d4-a716-446655440001"}
+invalid json line
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Valid 2"}]},"timestamp":1234567891,"sessionId":"550e8400-e29b-41d4-a716-446655440000","uuid":"550e8400-e29b-41d4-a716-446655440002"}"#;
+
+        let file = create_test_file(content);
+        let result = parse_conversation_file(file.path());
+
+        assert!(result.is_ok());
+        let entries = result.unwrap();
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_conversation_fails_with_over_50_percent_failures() {
+        let content = r#"invalid line 1
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Valid"}]},"timestamp":1234567890,"sessionId":"550e8400-e29b-41d4-a716-446655440000","uuid":"550e8400-e29b-41d4-a716-446655440001"}
+invalid line 2
+invalid line 3"#;
+
+        let file = create_test_file(content);
+        let result = parse_conversation_file(file.path());
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Too many parse failures"));
+    }
+
+    #[test]
+    fn test_parse_conversation_fails_with_100_consecutive_errors() {
+        let mut content = String::new();
+        for i in 0..101 {
+            content.push_str(&format!("invalid line {}\n", i));
+        }
+
+        let file = create_test_file(&content);
+        let result = parse_conversation_file(file.path());
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Too many consecutive parse errors"));
+    }
+
+    #[test]
+    fn test_parse_conversation_nonexistent_file() {
+        let result = parse_conversation_file(Path::new("/nonexistent/conversation.jsonl"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Failed to open"));
+    }
+
+    #[test]
+    fn test_parse_conversation_with_optional_fields() {
+        let content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Test"}]},"timestamp":1234567890,"sessionId":"550e8400-e29b-41d4-a716-446655440000","uuid":"550e8400-e29b-41d4-a716-446655440001","parent_uuid":"550e8400-e29b-41d4-a716-446655440000","is_sidechain":true}"#;
+
+        let file = create_test_file(content);
+        let result = parse_conversation_file(file.path());
+
+        assert!(result.is_ok());
+        let entries = result.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].parent_uuid,
+            Some("550e8400-e29b-41d4-a716-446655440000".to_string())
+        );
+        assert_eq!(entries[0].is_sidechain, Some(true));
+    }
+}

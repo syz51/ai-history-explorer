@@ -92,3 +92,252 @@ pub fn discover_projects(claude_dir: &Path) -> Result<Vec<ProjectInfo>> {
 
     Ok(projects)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+
+    use tempfile::TempDir;
+
+    use super::*;
+
+    /// Helper to create a test .claude directory structure
+    fn create_test_claude_dir() -> TempDir {
+        TempDir::new().expect("Failed to create temp dir")
+    }
+
+    /// Helper to create a project directory with optional agent files
+    fn create_project_dir(
+        projects_dir: &Path,
+        encoded_name: &str,
+        agent_files: &[&str],
+    ) -> PathBuf {
+        let project_dir = projects_dir.join(encoded_name);
+        fs::create_dir(&project_dir).expect("Failed to create project dir");
+
+        for filename in agent_files {
+            let file_path = project_dir.join(filename);
+            let mut file = fs::File::create(file_path).expect("Failed to create agent file");
+            file.write_all(b"test content").expect("Failed to write agent file");
+        }
+
+        project_dir
+    }
+
+    #[test]
+    fn test_discover_projects_with_valid_structure() {
+        let claude_dir = create_test_claude_dir();
+        let projects_dir = claude_dir.path().join("projects");
+        fs::create_dir(&projects_dir).expect("Failed to create projects dir");
+
+        // Create projects with agent files
+        create_project_dir(&projects_dir, "-Users%2Ftest%2Fproject1", &["agent-123.jsonl"]);
+        create_project_dir(&projects_dir, "-Users%2Ftest%2Fproject2", &["agent-456.jsonl"]);
+
+        let result = discover_projects(claude_dir.path());
+        assert!(result.is_ok());
+        let mut projects = result.unwrap();
+
+        assert_eq!(projects.len(), 2);
+
+        // Sort by encoded_name for consistent ordering
+        projects.sort_by(|a, b| a.encoded_name.cmp(&b.encoded_name));
+
+        // Check first project
+        assert_eq!(projects[0].encoded_name, "-Users%2Ftest%2Fproject1");
+        assert_eq!(projects[0].decoded_path, PathBuf::from("/Users/test/project1"));
+        assert_eq!(projects[0].agent_files.len(), 1);
+        assert!(projects[0].agent_files[0].ends_with("agent-123.jsonl"));
+
+        // Check second project
+        assert_eq!(projects[1].encoded_name, "-Users%2Ftest%2Fproject2");
+        assert_eq!(projects[1].decoded_path, PathBuf::from("/Users/test/project2"));
+        assert_eq!(projects[1].agent_files.len(), 1);
+        assert!(projects[1].agent_files[0].ends_with("agent-456.jsonl"));
+    }
+
+    #[test]
+    fn test_discover_projects_missing_directory() {
+        let claude_dir = create_test_claude_dir();
+
+        // Don't create projects directory
+        let result = discover_projects(claude_dir.path());
+        assert!(result.is_ok());
+        let projects = result.unwrap();
+
+        // Should return empty vec, not error
+        assert_eq!(projects.len(), 0);
+    }
+
+    #[test]
+    fn test_discover_projects_with_multiple_agent_files() {
+        let claude_dir = create_test_claude_dir();
+        let projects_dir = claude_dir.path().join("projects");
+        fs::create_dir(&projects_dir).expect("Failed to create projects dir");
+
+        // Create project with multiple agent files
+        create_project_dir(
+            &projects_dir,
+            "-Users%2Ftest%2Fproject",
+            &["agent-123.jsonl", "agent-456.jsonl", "agent-789.jsonl"],
+        );
+
+        let result = discover_projects(claude_dir.path());
+        assert!(result.is_ok());
+        let projects = result.unwrap();
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].agent_files.len(), 3);
+
+        // Verify all agent files are found
+        let filenames: Vec<String> = projects[0]
+            .agent_files
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .collect();
+        assert!(filenames.contains(&"agent-123.jsonl".to_string()));
+        assert!(filenames.contains(&"agent-456.jsonl".to_string()));
+        assert!(filenames.contains(&"agent-789.jsonl".to_string()));
+    }
+
+    #[test]
+    fn test_discover_projects_skips_non_agent_files() {
+        let claude_dir = create_test_claude_dir();
+        let projects_dir = claude_dir.path().join("projects");
+        fs::create_dir(&projects_dir).expect("Failed to create projects dir");
+
+        // Create project with agent and non-agent files
+        let project_dir = projects_dir.join("-Users%2Ftest%2Fproject");
+        fs::create_dir(&project_dir).expect("Failed to create project dir");
+
+        // Create various files
+        fs::File::create(project_dir.join("agent-123.jsonl")).expect("Failed to create file");
+        fs::File::create(project_dir.join("history.jsonl")).expect("Failed to create file");
+        fs::File::create(project_dir.join("readme.txt")).expect("Failed to create file");
+        fs::File::create(project_dir.join("other-file.jsonl")).expect("Failed to create file");
+
+        let result = discover_projects(claude_dir.path());
+        assert!(result.is_ok());
+        let projects = result.unwrap();
+
+        assert_eq!(projects.len(), 1);
+        // Should only include agent-*.jsonl files
+        assert_eq!(projects[0].agent_files.len(), 1);
+        assert!(projects[0].agent_files[0].ends_with("agent-123.jsonl"));
+    }
+
+    #[test]
+    fn test_discover_projects_skips_non_directories() {
+        let claude_dir = create_test_claude_dir();
+        let projects_dir = claude_dir.path().join("projects");
+        fs::create_dir(&projects_dir).expect("Failed to create projects dir");
+
+        // Create a regular file in projects directory
+        fs::File::create(projects_dir.join("not-a-directory.txt")).expect("Failed to create file");
+
+        // Create a valid project
+        create_project_dir(&projects_dir, "-Users%2Ftest%2Fproject", &["agent-123.jsonl"]);
+
+        let result = discover_projects(claude_dir.path());
+        assert!(result.is_ok());
+        let projects = result.unwrap();
+
+        // Should only find the valid project directory
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].encoded_name, "-Users%2Ftest%2Fproject");
+    }
+
+    #[test]
+    fn test_discover_projects_invalid_encoded_name() {
+        let claude_dir = create_test_claude_dir();
+        let projects_dir = claude_dir.path().join("projects");
+        fs::create_dir(&projects_dir).expect("Failed to create projects dir");
+
+        // Create project with path traversal in encoded name
+        create_project_dir(&projects_dir, "-Users%2F..%2Fetc%2Fpasswd", &["agent-123.jsonl"]);
+
+        // Create a valid project too
+        create_project_dir(&projects_dir, "-Users%2Ftest%2Fproject", &["agent-456.jsonl"]);
+
+        let result = discover_projects(claude_dir.path());
+        assert!(result.is_ok());
+        let projects = result.unwrap();
+
+        // Should skip invalid project and only return valid one
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].encoded_name, "-Users%2Ftest%2Fproject");
+    }
+
+    #[test]
+    fn test_discover_projects_no_agent_files() {
+        let claude_dir = create_test_claude_dir();
+        let projects_dir = claude_dir.path().join("projects");
+        fs::create_dir(&projects_dir).expect("Failed to create projects dir");
+
+        // Create project without agent files
+        create_project_dir(&projects_dir, "-Users%2Ftest%2Fproject", &[]);
+
+        let result = discover_projects(claude_dir.path());
+        assert!(result.is_ok());
+        let projects = result.unwrap();
+
+        // Should still include project but with empty agent_files
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].agent_files.len(), 0);
+    }
+
+    #[test]
+    fn test_discover_projects_empty_projects_directory() {
+        let claude_dir = create_test_claude_dir();
+        let projects_dir = claude_dir.path().join("projects");
+        fs::create_dir(&projects_dir).expect("Failed to create projects dir");
+
+        // Empty directory
+        let result = discover_projects(claude_dir.path());
+        assert!(result.is_ok());
+        let projects = result.unwrap();
+
+        assert_eq!(projects.len(), 0);
+    }
+
+    #[test]
+    fn test_discover_projects_preserves_project_dir_path() {
+        let claude_dir = create_test_claude_dir();
+        let projects_dir = claude_dir.path().join("projects");
+        fs::create_dir(&projects_dir).expect("Failed to create projects dir");
+
+        create_project_dir(&projects_dir, "-Users%2Ftest%2Fproject", &["agent-123.jsonl"]);
+
+        let result = discover_projects(claude_dir.path());
+        assert!(result.is_ok());
+        let projects = result.unwrap();
+
+        assert_eq!(projects.len(), 1);
+
+        // Verify project_dir is the actual directory in .claude/projects/
+        assert_eq!(projects[0].project_dir, projects_dir.join("-Users%2Ftest%2Fproject"));
+    }
+
+    #[test]
+    fn test_discover_projects_handles_special_characters() {
+        let claude_dir = create_test_claude_dir();
+        let projects_dir = claude_dir.path().join("projects");
+        fs::create_dir(&projects_dir).expect("Failed to create projects dir");
+
+        // Create project with special characters in path
+        create_project_dir(
+            &projects_dir,
+            "-Users%2Ftest%2Fmy%20project%20%28v1%29",
+            &["agent-123.jsonl"],
+        );
+
+        let result = discover_projects(claude_dir.path());
+        assert!(result.is_ok());
+        let projects = result.unwrap();
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].decoded_path, PathBuf::from("/Users/test/my project (v1)"));
+    }
+}

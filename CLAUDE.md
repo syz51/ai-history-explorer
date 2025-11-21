@@ -21,6 +21,25 @@ cargo run -- stats
 cargo test
 ```
 
+**Coverage:**
+
+```bash
+# Install cargo-llvm-cov (one-time setup)
+cargo install cargo-llvm-cov
+
+# Run tests with coverage report
+cargo llvm-cov --all-features --workspace
+
+# Generate LCOV report for CI/coverage tools
+cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+
+# Generate HTML report for local viewing
+cargo llvm-cov --all-features --workspace --html
+open target/llvm-cov/html/index.html
+```
+
+Target: 90%+ line coverage (enforced in pre-commit hooks and CI)
+
 **Linting:**
 
 ```bash
@@ -54,6 +73,7 @@ prek install
 - `cargo clippy --all-targets -- -D warnings` - linting
 - `cargo check --workspace` - type checking
 - `cargo test --lib` - fast unit tests
+- `cargo llvm-cov` - coverage check (enforces 90%+ line coverage)
 
 **Manual execution:**
 
