@@ -1,0 +1,22 @@
+repos:
+  - repo: local
+    hooks:
+      - id: fmt
+        name: Format check (nightly)
+        entry: cargo +nightly fmt --all -- --check
+        language: system
+        pass_filenames: false
+  - repo: https://github.com/doublify/pre-commit-rust
+    rev: v1.0
+    hooks:
+      - id: cargo-check
+        args: ["--workspace"]
+      - id: clippy
+        args: ["--all-targets", "--", "-D", "warnings"]
+  - repo: local
+    hooks:
+      - id: test-lib
+        name: Run fast unit tests
+        entry: cargo test --lib
+        language: system
+        pass_filenames: false

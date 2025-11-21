@@ -1,0 +1,10 @@
+#!/bin/sh
+# Pre-push hook: Run full test suite before pushing
+# To install: cp hooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+
+set -e
+
+echo "Running full test suite before push..."
+cargo test --all
+
+echo "All tests passed! Pushing..."
