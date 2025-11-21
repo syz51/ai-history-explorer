@@ -1,7 +1,6 @@
 # AI History Explorer
 
 [![CI](https://github.com/syz51/ai-history-explorer/workflows/CI/badge.svg)](https://github.com/syz51/ai-history-explorer/actions)
-[![codecov](https://codecov.io/gh/syz51/ai-history-explorer/branch/main/graph/badge.svg)](https://codecov.io/gh/syz51/ai-history-explorer)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 CLI tool for searching and browsing Claude Code conversation history stored in `~/.claude/`.

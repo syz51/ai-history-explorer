@@ -18,6 +18,13 @@
 //!
 //! This strategy balances robustness (tolerating minor corruption) with safety (rejecting
 //! fundamentally broken files).
+//!
+//! # Security: JSON Depth Limiting
+//!
+//! **Protection against stack overflow attacks**: `serde_json` enforces a default recursion limit
+//! of 128 levels for nested JSON structures. This prevents "Billion Laughs" style attacks where
+//! deeply nested JSON could cause stack overflow. Attempting to parse JSON deeper than 128 levels
+//! will result in a parse error that triggers the graceful degradation logic above.
 
 pub mod conversation;
 pub mod deserializers;

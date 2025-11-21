@@ -447,4 +447,31 @@ invalid line 2"#;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].display, "Entry with nested data");
     }
+
+    // ===== Security Tests: JSON Depth Limiting =====
+
+    #[test]
+    fn test_parse_moderately_nested_json_accepted() {
+        // Create JSON with reasonable nesting (10 levels) - should be accepted
+        // Note: serde_json has built-in recursion limit (default 128) that protects
+        // against deeply nested JSON that could cause stack overflow
+        let mut nested_json = String::from(
+            "{\"display\":\"test\",\"timestamp\":1234567890,\"sessionId\":\"550e8400-e29b-41d4-a716-446655440000\",\"extra\":",
+        );
+        for _ in 0..10 {
+            nested_json.push_str("{\"a\":");
+        }
+        nested_json.push_str("\"value\"");
+        for _ in 0..10 {
+            nested_json.push('}');
+        }
+        nested_json.push('}');
+
+        let file = create_test_file(&nested_json);
+        let result = parse_history_file(file.path());
+
+        assert!(result.is_ok(), "Should handle moderately nested JSON");
+        let entries = result.unwrap();
+        assert_eq!(entries.len(), 1, "Moderately nested entry should be parsed");
+    }
 }

@@ -1,10 +1,16 @@
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::models::ProjectInfo;
-use crate::utils::decode_and_validate_path;
+use crate::utils::{decode_and_validate_path, validate_path_not_symlink};
+
+/// Maximum number of projects to process (security: prevent resource exhaustion)
+const MAX_PROJECTS: usize = 1000;
+
+/// Maximum number of agent files per project (security: prevent resource exhaustion)
+const MAX_AGENT_FILES_PER_PROJECT: usize = 1000;
 
 /// Discover all projects in ~/.claude/projects/ and find agent-*.jsonl files
 ///
@@ -26,6 +32,8 @@ use crate::utils::decode_and_validate_path;
 /// Returns an error if:
 /// - The projects directory exists but cannot be read
 /// - A directory entry cannot be accessed
+/// - More than [`MAX_PROJECTS`] (1000) projects are found (security: resource exhaustion)
+/// - A project has more than [`MAX_AGENT_FILES_PER_PROJECT`] (1000) agent files
 ///
 /// Individual project directories with invalid encoded names or read errors are logged
 /// as warnings and skipped (graceful degradation).
@@ -67,6 +75,23 @@ pub fn discover_projects(claude_dir: &Path) -> Result<Vec<ProjectInfo>> {
             }
         };
 
+        // Security: Validate project directory is not a symlink
+        if let Err(e) = validate_path_not_symlink(&path) {
+            eprintln!(
+                "Warning: Skipping project directory (symlink not allowed) {}: {}",
+                encoded_name, e
+            );
+            continue;
+        }
+
+        // Security: Enforce maximum projects limit
+        if projects.len() >= MAX_PROJECTS {
+            bail!(
+                "Resource limit exceeded: Found more than {} projects. This may indicate a misconfiguration or attack.",
+                MAX_PROJECTS
+            );
+        }
+
         // Find all agent-*.jsonl files in this project directory
         let mut agent_files = Vec::new();
         match fs::read_dir(&path) {
@@ -76,6 +101,24 @@ pub fn discover_projects(claude_dir: &Path) -> Result<Vec<ProjectInfo>> {
                     if let Some(filename) = file_path.file_name() {
                         let filename_str = filename.to_string_lossy();
                         if filename_str.starts_with("agent-") && filename_str.ends_with(".jsonl") {
+                            // Security: Enforce maximum agent files per project limit
+                            if agent_files.len() >= MAX_AGENT_FILES_PER_PROJECT {
+                                bail!(
+                                    "Resource limit exceeded: Project {} has more than {} agent files",
+                                    encoded_name,
+                                    MAX_AGENT_FILES_PER_PROJECT
+                                );
+                            }
+
+                            // Security: Skip symlinked agent files
+                            if let Err(e) = validate_path_not_symlink(&file_path) {
+                                eprintln!(
+                                    "Warning: Skipping agent file (symlink not allowed) {}: {}",
+                                    file_path.display(),
+                                    e
+                                );
+                                continue;
+                            }
                             agent_files.push(file_path);
                         }
                     }
@@ -339,5 +382,92 @@ mod tests {
 
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].decoded_path, PathBuf::from("/Users/test/my project (v1)"));
+    }
+
+    // ===== Security Tests: Resource Limits =====
+
+    #[test]
+    fn test_discover_projects_max_projects_limit() {
+        let claude_dir = create_test_claude_dir();
+        let projects_dir = claude_dir.path().join("projects");
+        fs::create_dir(&projects_dir).expect("Failed to create projects dir");
+
+        // Create MAX_PROJECTS + 1 projects (should fail)
+        for i in 0..=MAX_PROJECTS {
+            create_project_dir(
+                &projects_dir,
+                &format!("-Users%2Ftest%2Fproject{}", i),
+                &["agent-1.jsonl"],
+            );
+        }
+
+        let result = discover_projects(claude_dir.path());
+        assert!(result.is_err(), "Should fail when exceeding max projects");
+        assert!(
+            result.unwrap_err().to_string().contains("Resource limit exceeded"),
+            "Error should mention resource limit"
+        );
+    }
+
+    #[test]
+    fn test_discover_projects_exactly_max_projects() {
+        let claude_dir = create_test_claude_dir();
+        let projects_dir = claude_dir.path().join("projects");
+        fs::create_dir(&projects_dir).expect("Failed to create projects dir");
+
+        // Create exactly MAX_PROJECTS (should succeed)
+        for i in 0..MAX_PROJECTS {
+            create_project_dir(
+                &projects_dir,
+                &format!("-Users%2Ftest%2Fproject{}", i),
+                &["agent-1.jsonl"],
+            );
+        }
+
+        let result = discover_projects(claude_dir.path());
+        assert!(result.is_ok(), "Should succeed with exactly max projects");
+        let projects = result.unwrap();
+        assert_eq!(projects.len(), MAX_PROJECTS);
+    }
+
+    #[test]
+    fn test_discover_projects_max_agent_files_limit() {
+        let claude_dir = create_test_claude_dir();
+        let projects_dir = claude_dir.path().join("projects");
+        fs::create_dir(&projects_dir).expect("Failed to create projects dir");
+
+        // Create project with MAX_AGENT_FILES_PER_PROJECT + 1 agent files (should fail)
+        let agent_files: Vec<String> =
+            (0..=MAX_AGENT_FILES_PER_PROJECT).map(|i| format!("agent-{}.jsonl", i)).collect();
+        let agent_file_refs: Vec<&str> = agent_files.iter().map(|s| s.as_str()).collect();
+
+        create_project_dir(&projects_dir, "-Users%2Ftest%2Fproject", &agent_file_refs);
+
+        let result = discover_projects(claude_dir.path());
+        assert!(result.is_err(), "Should fail when exceeding max agent files");
+        assert!(
+            result.unwrap_err().to_string().contains("Resource limit exceeded"),
+            "Error should mention resource limit"
+        );
+    }
+
+    #[test]
+    fn test_discover_projects_exactly_max_agent_files() {
+        let claude_dir = create_test_claude_dir();
+        let projects_dir = claude_dir.path().join("projects");
+        fs::create_dir(&projects_dir).expect("Failed to create projects dir");
+
+        // Create project with exactly MAX_AGENT_FILES_PER_PROJECT (should succeed)
+        let agent_files: Vec<String> =
+            (0..MAX_AGENT_FILES_PER_PROJECT).map(|i| format!("agent-{}.jsonl", i)).collect();
+        let agent_file_refs: Vec<&str> = agent_files.iter().map(|s| s.as_str()).collect();
+
+        create_project_dir(&projects_dir, "-Users%2Ftest%2Fproject", &agent_file_refs);
+
+        let result = discover_projects(claude_dir.path());
+        assert!(result.is_ok(), "Should succeed with exactly max agent files");
+        let projects = result.unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].agent_files.len(), MAX_AGENT_FILES_PER_PROJECT);
     }
 }

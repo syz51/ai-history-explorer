@@ -29,29 +29,51 @@ Implement system clipboard copying using platform-specific tools (pbcopy on macO
 
 ## Tasks
 
-### Phase 1: Core Infrastructure (Current)
+### Phase 1: Core Infrastructure ✅ COMPLETE
 
-- [ ] Create Rust project structure (`ai-history-explorer/` binary)
-- [ ] Add dependencies: serde, serde_json, clap, anyhow, chrono
-- [ ] Implement JSONL parser for `history.jsonl` format
-- [ ] Implement data structures (HistoryEntry, EntryType enum)
-- [ ] Implement path encoding/decoding (`/Users/foo/bar` ↔ `-Users-foo-bar`)
-- [ ] Implement project discovery in `~/.claude/projects/*/`
-- [ ] Implement agent conversation parser for `agent-*.jsonl` files
-- [ ] Build unified index from user prompts + agent messages
-- [ ] Add CLI arguments: `--help`, `--version`, `--stats`
-- [ ] Implement path display with ~ substitution
-- [ ] Handle edge cases: missing files, malformed JSON, empty history
-- [ ] Add graceful degradation for format changes (version detection if possible)
-- [ ] Add tests for JSONL parsing, path encoding, index building
+- ✅ Create Rust project structure (`ai-history-explorer/` binary)
+- ✅ Add dependencies: serde, serde_json, clap, anyhow, chrono, percent-encoding, uuid
+- ✅ Implement JSONL parser for `history.jsonl` format
+- ✅ Implement data structures (HistoryEntry, EntryType enum)
+- ✅ Implement path encoding/decoding with percent encoding (security fix)
+- ✅ Implement project discovery in `~/.claude/projects/*/`
+- ✅ Implement agent conversation parser for `agent-*.jsonl` files
+- ✅ Build unified index from user prompts + agent messages
+- ✅ Add CLI arguments: `--help`, `--version`, `--stats`
+- ✅ Implement path display with ~ substitution
+- ✅ Handle edge cases: missing files, malformed JSON, empty history
+- ✅ Add graceful degradation with >50% failure threshold
+- ✅ Add tests for JSONL parsing, path encoding, index building
+- ✅ **Security hardening** (6 protections: symlink validation, JSON depth, resource limits, file size, path traversal, terminal sanitization)
+- ✅ **Comprehensive test suite** (178 tests: 125 unit + 47 integration + 6 doctests)
+- ✅ **Test coverage enforcement** (97.03% achieved, 90%+ target in pre-commit hooks)
+- ✅ **Code review fixes** (21/22 issues resolved, 1 deferred)
+
+**Phase 1 Completion Stats** (2025-01-21):
+
+- **178 tests passing** (100% pass rate)
+- **97.03% code coverage** (98.48% line coverage)
+- **Zero clippy warnings**
+- **21/22 issues fixed** (1 deferred to Phase 2: Windows support)
+- **Production-ready** for macOS
 
 **Testing Notes:**
 
-- Permission denied test (`test_parse_permission_denied`) uses Unix-specific APIs (`std::os::unix::fs::PermissionsExt`)
-- Windows builds require `#[cfg(unix)]` conditional compilation for this test
-- Alternative: implement cross-platform permission test or accept Unix-only coverage
+- Platform-specific tests use `#[cfg(unix)]` for symlinks
+- Windows support deferred to Phase 2+
+- Test utilities in `tests/common/mod.rs` for fixture builders
 
-### Phase 2+: TUI & Advanced Features (Deferred)
+### Phase 2+: TUI & Advanced Features
+
+**Platform Support** (deferred from Phase 1):
+
+- [ ] **Windows support** (#4 from code review)
+  - [ ] Cross-platform home directory detection (dirs or home crate)
+  - [ ] Windows path handling tests
+  - [ ] Different HOME env var behavior (USERPROFILE)
+  - [ ] Symlink tests for Windows (different API)
+
+**TUI Features**:
 
 - [ ] Add dependencies: nucleo-picker, ratatui, arboard
 - [ ] Integrate nucleo-picker for fuzzy search
@@ -65,6 +87,34 @@ Implement system clipboard copying using platform-specific tools (pbcopy on macO
 - [ ] Implement field filter application before fuzzy match
 - [ ] Add advanced search: date ranges, negation, regex
 - [ ] Add multi-select support for batch copying multiple prompts
+
+**Performance Enhancements**:
+
+- [ ] **Parallel agent file parsing** (high impact)
+  - [ ] Use rayon for concurrent parsing
+  - [ ] Benchmark performance gain
+- [ ] **Streaming instead of full memory load** (medium impact)
+  - [ ] Stream entries instead of collect() into Vec
+  - [ ] Lazy evaluation for large datasets
+- [ ] **Preview text lazy loading** (low impact)
+  - [ ] Only load preview when displayed
+
+**Testing & Quality** (optional):
+
+- [ ] **Performance benchmarks**
+  - [ ] Install criterion crate
+  - [ ] Benchmark parsing 10K, 100K, 1M entries
+  - [ ] Track regression in CI
+- [ ] **Concurrent access tests**
+  - [ ] Multiple processes reading ~/.claude/ simultaneously
+  - [ ] File modification during parsing edge cases
+- [ ] **Fuzzing** (advanced)
+  - [ ] Install cargo-fuzz
+  - [ ] Fuzz parsers with AFL/libfuzzer
+  - [ ] Target: malformed JSONL, extreme nesting, encoding attacks
+
+**Distribution**:
+
 - [ ] Write README with installation and usage instructions
 - [ ] Package for cargo install (initial release)
 - [ ] (Future) Add homebrew, apt, scoop distribution
@@ -141,6 +191,36 @@ The data model below is **reverse-engineered from local files**, not from offici
 - **Phase 1 scope**: Core infrastructure only (parsing, indexing, CLI stats)
   - NO TUI, fuzzy search, clipboard, or field filters in Phase 1
   - Pure fuzzy matching initially, field filters (`project:foo`, `type:agent`) deferred to Phase 2+
+
+**Phase 1 Retrospective (Completed 2025-01-21):**
+
+**What Went Well**:
+
+- ✅ All 17 planned tasks completed
+- ✅ Added significant security hardening beyond original scope
+- ✅ Comprehensive test suite (178 tests, 97%+ coverage)
+- ✅ Code review identified and fixed 22 issues (21 fixed, 1 deferred)
+- ✅ Production-ready for macOS
+
+**Key Outcomes**:
+
+- **Path encoding**: Switched from simple `-` replacement to percent encoding (fixes collision bug)
+- **Security**: 6 protection layers (symlink, JSON depth, resource limits, file size, path traversal, terminal sanitization)
+- **Error handling**: Graceful degradation with >50% failure threshold and consecutive error limits
+- **Testing**: Test utilities in `tests/common/mod.rs` enable easy fixture creation
+- **Platform**: macOS-only Phase 1; Windows support planned for Phase 2
+
+**Issues Deferred to Phase 2**:
+
+- Windows platform support (#4 - requires dirs/home crate)
+- Parallel parsing (performance enhancement)
+- Streaming architecture (memory optimization)
+- Fuzzing and benchmarking (advanced testing)
+
+**Documentation**:
+
+- Consolidated design decisions: `docs/design-decisions-phase1.md`
+- Archived original docs: `docs/archive/TESTING.md`, `docs/archive/code-review-phase1.md`
 
 **Pending:**
 

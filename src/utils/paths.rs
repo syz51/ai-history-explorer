@@ -76,11 +76,18 @@ pub fn decode_path(encoded: &str) -> PathBuf {
 
 /// Validates that a decoded path is safe and doesn't contain path traversal sequences
 ///
+/// This performs logical validation on the path structure without filesystem access.
+///
 /// # Errors
 ///
 /// Returns an error if:
 /// - The path contains '..' components (path traversal)
 /// - The path is not absolute
+///
+/// # Security Note
+///
+/// This function only validates the path structure. For filesystem operations,
+/// additionally call [`validate_path_not_symlink`] to prevent symlink-based attacks.
 pub fn validate_decoded_path(path: &Path) -> Result<()> {
     // Check for path traversal via '..' components
     for component in path.components() {
@@ -92,6 +99,32 @@ pub fn validate_decoded_path(path: &Path) -> Result<()> {
     // Additional validation: ensure path is absolute
     if !path.is_absolute() {
         bail!("Path must be absolute: {}", path.display());
+    }
+
+    Ok(())
+}
+
+/// Validates that a filesystem path is not a symbolic link
+///
+/// # Security
+///
+/// Prevents symlink-based attacks where an attacker creates a symlink in the
+/// `.claude/projects/` directory pointing to sensitive locations like `/etc/passwd`.
+/// This must be called for paths that will be accessed on the filesystem.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The path does not exist
+/// - The path metadata cannot be read
+/// - The path is a symbolic link
+pub fn validate_path_not_symlink(path: &Path) -> Result<()> {
+    // Use symlink_metadata to get metadata without following symlinks
+    let metadata = std::fs::symlink_metadata(path)
+        .with_context(|| format!("Failed to read metadata for path: {}", path.display()))?;
+
+    if metadata.is_symlink() {
+        bail!("Path is a symbolic link (symlinks not allowed for security): {}", path.display());
     }
 
     Ok(())
@@ -501,5 +534,57 @@ mod tests {
         let file = File::open(temp.path()).unwrap();
         let result = validate_file_size(&file, temp.path());
         assert!(result.is_err(), "File way over limit should fail validation");
+    }
+
+    // ===== Security Tests: Symlink Validation =====
+
+    #[test]
+    fn test_validate_regular_file_not_symlink() {
+        use tempfile::NamedTempFile;
+
+        let temp = NamedTempFile::new().unwrap();
+        let result = validate_path_not_symlink(temp.path());
+        assert!(result.is_ok(), "Regular file should pass symlink validation");
+    }
+
+    #[test]
+    fn test_validate_directory_not_symlink() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let result = validate_path_not_symlink(temp_dir.path());
+        assert!(result.is_ok(), "Regular directory should pass symlink validation");
+    }
+
+    #[test]
+    #[cfg(unix)] // Symlinks work differently on Windows
+    fn test_validate_symlink_rejected() {
+        use std::os::unix::fs::symlink;
+
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let target = temp_dir.path().join("target");
+        let link = temp_dir.path().join("link");
+
+        // Create target directory
+        std::fs::create_dir(&target).unwrap();
+
+        // Create symlink pointing to target
+        symlink(&target, &link).unwrap();
+
+        let result = validate_path_not_symlink(&link);
+        assert!(result.is_err(), "Symlink should fail validation");
+        assert!(
+            result.unwrap_err().to_string().contains("symbolic link"),
+            "Error should mention symbolic link"
+        );
+    }
+
+    #[test]
+    fn test_validate_nonexistent_path() {
+        let nonexistent = PathBuf::from("/tmp/does_not_exist_12345");
+        let result = validate_path_not_symlink(&nonexistent);
+        assert!(result.is_err(), "Nonexistent path should fail validation");
     }
 }
