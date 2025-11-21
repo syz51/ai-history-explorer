@@ -25,7 +25,8 @@ const ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b'@')
     .add(b'[')
     .add(b']')
-    .add(b'!');
+    .add(b'!')
+    .add(b'%');
 
 /// Encodes a file system path into Claude's project directory format using percent encoding
 ///
@@ -254,5 +255,251 @@ mod tests {
         let formatted3 = format_path_with_tilde_internal(&path3, None);
         // Just verify it doesn't crash
         assert!(!formatted3.is_empty());
+    }
+
+    // ===== Security Tests: Path Traversal Attacks =====
+
+    #[test]
+    fn test_encoded_parent_dir_basic() {
+        // Attack: -..%2Fetc%2Fpasswd -> /../etc/passwd
+        let encoded = "-..%2Fetc%2Fpasswd";
+        let result = decode_and_validate_path(encoded);
+        assert!(result.is_err(), "Should reject encoded parent dir at start");
+    }
+
+    #[test]
+    fn test_encoded_parent_dir_middle() {
+        // Attack: -Users%2F..%2F..%2Fetc%2Fpasswd -> /Users/../../etc/passwd
+        let encoded = "-Users%2F..%2F..%2Fetc%2Fpasswd";
+        let result = decode_and_validate_path(encoded);
+        assert!(result.is_err(), "Should reject encoded parent dir in middle");
+    }
+
+    #[test]
+    fn test_double_encoded_parent_dir() {
+        // Attack: double encoding %2E%2E%2F -> .. when decoded once, then ../ when decoded twice
+        // Note: Our percent_decode_str only decodes once, so %2E%2E%2F becomes literally ".."
+        let encoded = "-%2E%2E%2Fetc%2Fpasswd";
+        let decoded = decode_path(encoded);
+        // After single decode, %2E%2E becomes ".." literally
+        let result = validate_decoded_path(&decoded);
+        assert!(result.is_err(), "Should reject double-encoded parent dir");
+    }
+
+    #[test]
+    fn test_mixed_encoding_parent_dir() {
+        // Attack: -..%2Fsome%2Fpath (mixed literal .. with encoded /)
+        let encoded = "-..%2Fsome%2Fpath";
+        let result = decode_and_validate_path(encoded);
+        assert!(result.is_err(), "Should reject mixed encoded parent dir");
+    }
+
+    #[test]
+    fn test_absolute_sensitive_paths() {
+        // Attack: legitimate encoding but pointing to sensitive files
+        // While technically valid encoding, the validation should pass but
+        // the application should handle sensitive paths carefully
+        let etc_passwd = PathBuf::from("/etc/passwd");
+        let encoded = encode_path(&etc_passwd);
+        let result = decode_and_validate_path(&encoded);
+        // This SHOULD pass validation (it's a valid absolute path without ..)
+        // but the application must handle such paths carefully
+        assert!(result.is_ok(), "Valid absolute path should pass validation");
+        assert_eq!(result.unwrap(), PathBuf::from("/etc/passwd"));
+    }
+
+    #[test]
+    fn test_path_with_existing_percent() {
+        // Edge case: path that literally contains % character
+        // % is now in ENCODE_SET, so it gets encoded as %25
+        let path = PathBuf::from("/Users/foo%20bar/test");
+        let encoded = encode_path(&path);
+        // % should be encoded as %25, so %20 becomes %2520
+        assert!(encoded.contains("%2520"), "Percent sign should be encoded as %25");
+        assert!(!encoded.contains("%20"), "Original %20 should be double-encoded");
+        let decoded = decode_path(&encoded);
+        // Roundtrip should preserve the original path with %20
+        assert_eq!(decoded, path, "Should preserve literal percent signs in roundtrip");
+    }
+
+    #[test]
+    fn test_percent_encoding_prevents_double_decode_attack() {
+        // Security test: prevent double-decode path traversal attack
+        // If a directory name contains "%2E%2E" (percent-encoded ".."),
+        // we must encode the % to prevent it from being decoded into ".."
+        let malicious_path = PathBuf::from("/tmp/%2E%2E%2Fetc");
+        let encoded = encode_path(&malicious_path);
+
+        // The % should be encoded as %25, so %2E becomes %252E
+        assert!(encoded.contains("%252E"), "Percent in %2E should be encoded");
+
+        let decoded = decode_path(&encoded);
+        // After roundtrip, should still contain literal %2E%2E, NOT ".."
+        assert_eq!(decoded, PathBuf::from("/tmp/%2E%2E%2Fetc"));
+
+        // Validation should pass (no literal ".." components)
+        assert!(
+            validate_decoded_path(&decoded).is_ok(),
+            "Encoded percent sequences should not create path traversal"
+        );
+    }
+
+    #[test]
+    fn test_unicode_in_paths() {
+        // Unicode characters in paths
+        let path = PathBuf::from("/Users/测试/项目");
+        let encoded = encode_path(&path);
+        let decoded = decode_path(&encoded);
+        assert_eq!(path, decoded, "Should handle Unicode paths");
+        assert!(validate_decoded_path(&decoded).is_ok());
+    }
+
+    #[test]
+    fn test_very_long_path() {
+        // Test with a very long path (but not exceeding PATH_MAX)
+        let long_component = "a".repeat(255); // Max filename length on most filesystems
+        let path = PathBuf::from(format!(
+            "/Users/{}/{}/{}",
+            long_component, long_component, long_component
+        ));
+        let encoded = encode_path(&path);
+        let decoded = decode_path(&encoded);
+        assert_eq!(path, decoded, "Should handle long paths");
+        assert!(validate_decoded_path(&decoded).is_ok());
+    }
+
+    #[test]
+    fn test_empty_path_component() {
+        // Path with empty component (/Users//foo -> /Users/foo after normalization)
+        let encoded = "-Users%2F%2Ffoo"; // /Users//foo
+        let decoded = decode_path(encoded);
+        // Empty components are technically valid in Unix paths
+        assert!(validate_decoded_path(&decoded).is_ok());
+    }
+
+    #[test]
+    fn test_dot_single_component() {
+        // Single dot (.) is allowed - it represents current directory
+        let path = PathBuf::from("/Users/./foo");
+        assert!(validate_decoded_path(&path).is_ok(), "Single dot should be allowed");
+    }
+
+    #[test]
+    fn test_null_byte_in_path() {
+        // Rust's Path/PathBuf handles null bytes, but they're invalid in actual filesystem paths
+        // The encoding should preserve them, but filesystem operations will fail naturally
+        let path_with_null = "/Users/foo\0bar";
+        let encoded =
+            utf8_percent_encode(path_with_null.strip_prefix('/').unwrap(), ENCODE_SET).to_string();
+        let formatted = format!("-{}", encoded);
+        let decoded = decode_path(&formatted);
+        // Validation only checks for .. and absolute path, so this passes
+        // But actual filesystem operations will fail
+        assert!(validate_decoded_path(&decoded).is_ok());
+    }
+
+    #[test]
+    fn test_special_chars_encoding() {
+        // Test various special characters get encoded properly
+        let path = PathBuf::from("/Users/foo bar/test@123");
+        let encoded = encode_path(&path);
+        // Space should be encoded
+        assert!(encoded.contains("%20"), "Space should be percent-encoded");
+        // @ should be encoded
+        assert!(encoded.contains("%40"), "@ should be percent-encoded");
+        let decoded = decode_path(&encoded);
+        assert_eq!(path, decoded);
+    }
+
+    // ===== Security Tests: File Size Validation =====
+
+    #[test]
+    fn test_file_size_empty() {
+        use std::io::Write;
+
+        use tempfile::NamedTempFile;
+
+        let mut temp = NamedTempFile::new().unwrap();
+        // Empty file (0 bytes)
+        temp.flush().unwrap();
+
+        let file = File::open(temp.path()).unwrap();
+        let result = validate_file_size(&file, temp.path());
+        assert!(result.is_ok(), "Empty file should pass validation");
+    }
+
+    #[test]
+    fn test_file_size_under_limit() {
+        use std::io::Write;
+
+        use tempfile::NamedTempFile;
+
+        let mut temp = NamedTempFile::new().unwrap();
+        // 1KB file
+        temp.write_all(&vec![b'a'; 1024]).unwrap();
+        temp.flush().unwrap();
+
+        let file = File::open(temp.path()).unwrap();
+        let result = validate_file_size(&file, temp.path());
+        assert!(result.is_ok(), "Small file should pass validation");
+    }
+
+    #[test]
+    fn test_file_size_exactly_10mb() {
+        use std::io::Write;
+
+        use tempfile::NamedTempFile;
+
+        let mut temp = NamedTempFile::new().unwrap();
+        // Exactly 10MB
+        let chunk_size = 1024 * 1024; // 1MB chunks
+        for _ in 0..10 {
+            temp.write_all(&vec![b'a'; chunk_size]).unwrap();
+        }
+        temp.flush().unwrap();
+
+        let file = File::open(temp.path()).unwrap();
+        let result = validate_file_size(&file, temp.path());
+        assert!(result.is_ok(), "Exactly 10MB file should pass validation");
+    }
+
+    #[test]
+    fn test_file_size_10mb_plus_one() {
+        use std::io::Write;
+
+        use tempfile::NamedTempFile;
+
+        let mut temp = NamedTempFile::new().unwrap();
+        // 10MB + 1 byte
+        let chunk_size = 1024 * 1024; // 1MB chunks
+        for _ in 0..10 {
+            temp.write_all(&vec![b'a'; chunk_size]).unwrap();
+        }
+        temp.write_all(b"x").unwrap(); // One extra byte
+        temp.flush().unwrap();
+
+        let file = File::open(temp.path()).unwrap();
+        let result = validate_file_size(&file, temp.path());
+        assert!(result.is_err(), "File over 10MB should fail validation");
+        assert!(result.unwrap_err().to_string().contains("File too large"));
+    }
+
+    #[test]
+    fn test_file_size_way_over_limit() {
+        use std::io::Write;
+
+        use tempfile::NamedTempFile;
+
+        let mut temp = NamedTempFile::new().unwrap();
+        // 20MB (way over limit)
+        let chunk_size = 1024 * 1024; // 1MB chunks
+        for _ in 0..20 {
+            temp.write_all(&vec![b'a'; chunk_size]).unwrap();
+        }
+        temp.flush().unwrap();
+
+        let file = File::open(temp.path()).unwrap();
+        let result = validate_file_size(&file, temp.path());
+        assert!(result.is_err(), "File way over limit should fail validation");
     }
 }

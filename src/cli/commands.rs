@@ -191,4 +191,140 @@ mod tests {
         // Just verify it doesn't panic with empty index
         print_stats(&entries, &claude_dir);
     }
+
+    // ===== Security Tests: Terminal Injection =====
+
+    #[test]
+    fn test_display_text_with_ansi_escape_codes() {
+        use chrono::{TimeZone, Utc};
+
+        // Test with ANSI color codes that could change terminal output
+        let entries = vec![crate::models::SearchEntry {
+            entry_type: EntryType::UserPrompt,
+            display_text: "\x1b[31mRed text\x1b[0m with escape codes".to_string(),
+            timestamp: Utc.timestamp_opt(1234567890, 0).unwrap(),
+            project_path: None,
+            session_id: "session1".to_string(),
+        }];
+
+        let claude_dir = PathBuf::from("/Users/test/.claude");
+
+        // Should not panic or execute escape codes maliciously
+        // In future, might want to strip or escape these
+        print_stats(&entries, &claude_dir);
+    }
+
+    #[test]
+    fn test_display_text_with_terminal_control_sequences() {
+        use chrono::{TimeZone, Utc};
+
+        // Test with various terminal control sequences
+        let entries = vec![
+            crate::models::SearchEntry {
+                entry_type: EntryType::UserPrompt,
+                // Cursor movement: ESC[2J (clear screen), ESC[H (home)
+                display_text: "\x1b[2J\x1b[H Cleared screen".to_string(),
+                timestamp: Utc.timestamp_opt(1234567890, 0).unwrap(),
+                project_path: None,
+                session_id: "session1".to_string(),
+            },
+            crate::models::SearchEntry {
+                entry_type: EntryType::UserPrompt,
+                // Bell character
+                display_text: "Alert! \x07".to_string(),
+                timestamp: Utc.timestamp_opt(1234567891, 0).unwrap(),
+                project_path: None,
+                session_id: "session2".to_string(),
+            },
+        ];
+
+        let claude_dir = PathBuf::from("/Users/test/.claude");
+
+        // Should handle control sequences safely
+        print_stats(&entries, &claude_dir);
+    }
+
+    #[test]
+    fn test_display_text_with_newlines() {
+        use chrono::{TimeZone, Utc};
+
+        let entries = vec![crate::models::SearchEntry {
+            entry_type: EntryType::UserPrompt,
+            display_text: "Multi\nline\ntext\nwith\nnewlines".to_string(),
+            timestamp: Utc.timestamp_opt(1234567890, 0).unwrap(),
+            project_path: None,
+            session_id: "session1".to_string(),
+        }];
+
+        let claude_dir = PathBuf::from("/Users/test/.claude");
+
+        // Should handle newlines in display text
+        print_stats(&entries, &claude_dir);
+    }
+
+    #[test]
+    fn test_display_text_with_unicode_and_emoji() {
+        use chrono::{TimeZone, Utc};
+
+        let entries = vec![
+            crate::models::SearchEntry {
+                entry_type: EntryType::UserPrompt,
+                display_text: "Hello 👋 World 🌍".to_string(),
+                timestamp: Utc.timestamp_opt(1234567890, 0).unwrap(),
+                project_path: None,
+                session_id: "session1".to_string(),
+            },
+            crate::models::SearchEntry {
+                entry_type: EntryType::UserPrompt,
+                display_text: "测试 中文 テスト العربية".to_string(),
+                timestamp: Utc.timestamp_opt(1234567891, 0).unwrap(),
+                project_path: None,
+                session_id: "session2".to_string(),
+            },
+        ];
+
+        let claude_dir = PathBuf::from("/Users/test/.claude");
+
+        // Should handle Unicode and emoji properly
+        print_stats(&entries, &claude_dir);
+    }
+
+    #[test]
+    fn test_display_text_with_zero_width_characters() {
+        use chrono::{TimeZone, Utc};
+
+        let entries = vec![crate::models::SearchEntry {
+            entry_type: EntryType::UserPrompt,
+            // Zero-width joiner, zero-width non-joiner, zero-width space
+            display_text: "Text\u{200D}with\u{200C}zero\u{200B}width".to_string(),
+            timestamp: Utc.timestamp_opt(1234567890, 0).unwrap(),
+            project_path: None,
+            session_id: "session1".to_string(),
+        }];
+
+        let claude_dir = PathBuf::from("/Users/test/.claude");
+
+        // Should handle zero-width characters
+        print_stats(&entries, &claude_dir);
+    }
+
+    #[test]
+    fn test_display_text_with_very_long_text() {
+        use chrono::{TimeZone, Utc};
+
+        // Create a very long display text (10KB)
+        let long_text = "a".repeat(10240);
+        let entries = vec![crate::models::SearchEntry {
+            entry_type: EntryType::UserPrompt,
+            display_text: long_text,
+            timestamp: Utc.timestamp_opt(1234567890, 0).unwrap(),
+            project_path: None,
+            session_id: "session1".to_string(),
+        }];
+
+        let claude_dir = PathBuf::from("/Users/test/.claude");
+
+        // Should handle very long text without issues
+        print_stats(&entries, &claude_dir);
+    }
 }

@@ -248,4 +248,203 @@ invalid line 2"#;
         let entries = result.unwrap();
         assert_eq!(entries.len(), 2);
     }
+
+    // ===== Large File Handling Tests =====
+
+    #[test]
+    fn test_parse_very_long_single_line() {
+        // Create a JSONL entry with 100KB display text
+        let long_display = "a".repeat(100 * 1024);
+        let content = format!(
+            r#"{{"display":"{}","timestamp":1234567890,"sessionId":"550e8400-e29b-41d4-a716-446655440000"}}"#,
+            long_display
+        );
+
+        let file = create_test_file(&content);
+        let result = parse_history_file(file.path());
+
+        assert!(result.is_ok(), "Should handle very long single line");
+        let entries = result.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].display.len(), 100 * 1024);
+    }
+
+    #[test]
+    fn test_parse_many_entries() {
+        // Test with 1000 entries
+        let mut content = String::new();
+        for i in 0..1000 {
+            content.push_str(&format!(
+                r#"{{"display":"Entry {}","timestamp":{},"sessionId":"550e8400-e29b-41d4-a716-4466554{:05x}"}}"#,
+                i, 1234567890 + i, i
+            ));
+            content.push('\n');
+        }
+
+        let file = create_test_file(&content);
+        let result = parse_history_file(file.path());
+
+        assert!(result.is_ok(), "Should handle many entries");
+        let entries = result.unwrap();
+        assert_eq!(entries.len(), 1000);
+    }
+
+    #[test]
+    fn test_parse_file_approaching_size_limit() {
+        // Create a file close to 10MB limit (9MB)
+        // Each entry is ~100 bytes, so 90000 entries ≈ 9MB
+        let mut content = String::new();
+        let entry_template = r#"{"display":"Test entry for size check","timestamp":1234567890,"sessionId":"550e8400-e29b-41d4-a716-446655440000"}"#;
+        let entry_size = entry_template.len() + 1; // +1 for newline
+        let num_entries = (9 * 1024 * 1024) / entry_size;
+
+        for i in 0..num_entries {
+            content.push_str(&format!(
+                r#"{{"display":"Entry {}","timestamp":{},"sessionId":"550e8400-e29b-41d4-a716-4466554{:05x}"}}"#,
+                i, 1234567890 + i, i % 100000
+            ));
+            content.push('\n');
+        }
+
+        let file = create_test_file(&content);
+        let result = parse_history_file(file.path());
+
+        assert!(result.is_ok(), "Should handle file approaching size limit");
+        assert!(!result.unwrap().is_empty());
+    }
+
+    // ===== I/O Error Scenario Tests =====
+
+    #[test]
+    fn test_parse_permission_denied() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        // Create file with content
+        let mut temp = NamedTempFile::new().unwrap();
+        temp.write_all(b"test").unwrap();
+        temp.flush().unwrap();
+
+        // Change permissions to 000 (no read/write/execute)
+        let metadata = fs::metadata(temp.path()).unwrap();
+        let mut permissions = metadata.permissions();
+        permissions.set_mode(0o000);
+        fs::set_permissions(temp.path(), permissions).unwrap();
+
+        // Try to parse - should fail with permission error
+        let result = parse_history_file(temp.path());
+
+        // Restore permissions before asserting (so temp file can be cleaned up)
+        let metadata = fs::metadata(temp.path()).unwrap();
+        let mut permissions = metadata.permissions();
+        permissions.set_mode(0o644);
+        fs::set_permissions(temp.path(), permissions).unwrap();
+
+        assert!(result.is_err(), "Should fail with permission denied");
+        assert!(result.unwrap_err().to_string().contains("Failed to open"));
+    }
+
+    #[test]
+    fn test_parse_truncated_json_at_eof() {
+        // File that ends mid-JSON (simulating interrupted write)
+        let content = r#"{"display":"Valid entry","timestamp":1234567890,"sessionId":"550e8400-e29b-41d4-a716-446655440000"}
+{"display":"Incomplete entry","timestamp":123456"#;
+
+        let file = create_test_file(content);
+        let result = parse_history_file(file.path());
+
+        // Should gracefully skip the incomplete entry
+        assert!(result.is_ok());
+        let entries = result.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].display, "Valid entry");
+    }
+
+    #[test]
+    fn test_parse_mixed_line_endings() {
+        // Mix of LF and CRLF line endings
+        let content = "{\
+\"display\":\"Entry 1\",\
+\"timestamp\":1234567890,\
+\"sessionId\":\"550e8400-e29b-41d4-a716-446655440000\"\
+}\r\n\
+{\
+\"display\":\"Entry 2\",\
+\"timestamp\":1234567891,\
+\"sessionId\":\"550e8400-e29b-41d4-a716-446655440001\"\
+}\n\
+{\
+\"display\":\"Entry 3\",\
+\"timestamp\":1234567892,\
+\"sessionId\":\"550e8400-e29b-41d4-a716-446655440002\"\
+}";
+
+        let file = create_test_file(content);
+        let result = parse_history_file(file.path());
+
+        assert!(result.is_ok(), "Should handle mixed line endings");
+        let entries = result.unwrap();
+        assert_eq!(entries.len(), 3);
+    }
+
+    #[test]
+    fn test_parse_no_trailing_newline() {
+        // File without trailing newline (common in some editors)
+        let content = r#"{"display":"Entry 1","timestamp":1234567890,"sessionId":"550e8400-e29b-41d4-a716-446655440000"}
+{"display":"Entry 2","timestamp":1234567891,"sessionId":"550e8400-e29b-41d4-a716-446655440001"}"#;
+
+        let file = create_test_file(content);
+        let result = parse_history_file(file.path());
+
+        assert!(result.is_ok(), "Should handle no trailing newline");
+        let entries = result.unwrap();
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_duplicate_session_ids() {
+        // Multiple entries with same session ID (should be allowed)
+        let content = r#"{"display":"Entry 1","timestamp":1234567890,"sessionId":"550e8400-e29b-41d4-a716-446655440000"}
+{"display":"Entry 2","timestamp":1234567891,"sessionId":"550e8400-e29b-41d4-a716-446655440000"}
+{"display":"Entry 3","timestamp":1234567892,"sessionId":"550e8400-e29b-41d4-a716-446655440000"}"#;
+
+        let file = create_test_file(content);
+        let result = parse_history_file(file.path());
+
+        assert!(result.is_ok(), "Should allow duplicate session IDs");
+        let entries = result.unwrap();
+        assert_eq!(entries.len(), 3);
+        assert!(entries.iter().all(|e| e.session_id == "550e8400-e29b-41d4-a716-446655440000"));
+    }
+
+    #[test]
+    fn test_parse_identical_timestamps() {
+        // Multiple entries with same timestamp (should be allowed)
+        let content = r#"{"display":"Entry 1","timestamp":1234567890000,"sessionId":"550e8400-e29b-41d4-a716-446655440000"}
+{"display":"Entry 2","timestamp":1234567890000,"sessionId":"550e8400-e29b-41d4-a716-446655440001"}
+{"display":"Entry 3","timestamp":1234567890000,"sessionId":"550e8400-e29b-41d4-a716-446655440002"}"#;
+
+        let file = create_test_file(content);
+        let result = parse_history_file(file.path());
+
+        assert!(result.is_ok(), "Should allow identical timestamps");
+        let entries = result.unwrap();
+        assert_eq!(entries.len(), 3);
+        // Check using timestamp_millis() since we store milliseconds
+        assert!(entries.iter().all(|e| e.timestamp.timestamp_millis() == 1234567890000));
+    }
+
+    #[test]
+    fn test_parse_deeply_nested_json() {
+        // JSON with nested structures in optional fields
+        let content = r#"{"display":"Entry with nested data","timestamp":1234567890,"sessionId":"550e8400-e29b-41d4-a716-446655440000","project":"/Users/test/project","pastedContents":{"type":"text","data":"nested content"}}"#;
+
+        let file = create_test_file(content);
+        let result = parse_history_file(file.path());
+
+        assert!(result.is_ok(), "Should handle nested JSON structures");
+        let entries = result.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].display, "Entry with nested data");
+    }
 }

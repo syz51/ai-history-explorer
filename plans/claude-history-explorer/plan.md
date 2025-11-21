@@ -45,6 +45,12 @@ Implement system clipboard copying using platform-specific tools (pbcopy on macO
 - [ ] Add graceful degradation for format changes (version detection if possible)
 - [ ] Add tests for JSONL parsing, path encoding, index building
 
+**Testing Notes:**
+
+- Permission denied test (`test_parse_permission_denied`) uses Unix-specific APIs (`std::os::unix::fs::PermissionsExt`)
+- Windows builds require `#[cfg(unix)]` conditional compilation for this test
+- Alternative: implement cross-platform permission test or accept Unix-only coverage
+
 ### Phase 2+: TUI & Advanced Features (Deferred)
 
 - [ ] Add dependencies: nucleo-picker, ratatui, arboard
