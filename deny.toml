@@ -1,0 +1,45 @@
+# cargo-deny configuration
+# https://embarkstudios.github.io/cargo-deny/
+
+[licenses]
+# Allow common permissive open source licenses
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "Zlib",
+]
+
+# Confidence threshold for license detection (0.0 - 1.0)
+confidence-threshold = 0.8
+
+# Deny-by-default: any license not in allow list fails the check
+unlicensed = "deny"
+
+[advisories]
+# Deny crates with security vulnerabilities from RustSec advisory database
+db-urls = ["https://github.com/rustsec/advisory-db"]
+vulnerability = "deny"
+unmaintained = "warn"
+unsound = "warn"
+yanked = "warn"
+
+[bans]
+# Warn on multiple versions of the same crate (helps reduce bloat)
+multiple-versions = "warn"
+# Deny wildcard dependencies (prevents unintended upgrades)
+wildcards = "allow"
+# Allow workspace members to have any features
+workspace-default-features = "allow"
+external-default-features = "allow"
+
+[sources]
+# Only allow crates from crates.io
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
