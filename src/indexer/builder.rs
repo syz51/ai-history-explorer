@@ -273,9 +273,16 @@ pub fn build_index(claude_dir: &Path) -> Result<Vec<SearchEntry>> {
                         continue;
                     }
 
-                    // Validate project path to prevent path traversal
+                    // Validate project path to prevent path traversal and misleading paths
                     let project_path = entry.project.as_ref().and_then(|p| {
                         let path = PathBuf::from(p);
+                        if !path.is_absolute() {
+                            eprintln!(
+                                "Warning: Skipping entry with non-absolute project path: {}",
+                                p
+                            );
+                            return None;
+                        }
                         // Reject paths with .. components
                         if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
                             eprintln!(
@@ -640,6 +647,22 @@ mod tests {
         assert_eq!(index.len(), 1);
         assert_eq!(index[0].display_text, "Malicious prompt");
         assert!(index[0].project_path.is_none());
+    }
+
+    #[test]
+    fn test_build_index_rejects_relative_project_paths() {
+        let claude_dir = create_test_claude_dir();
+
+        // Create history entry with a relative project path (should be ignored)
+        let history_content = r#"{"display":"Relative path","timestamp":1234567890,"sessionId":"550e8400-e29b-41d4-a716-446655440000","project":"relative/path"}"#;
+        write_history_file(claude_dir.path(), history_content);
+
+        let result = build_index(claude_dir.path());
+        assert!(result.is_ok());
+        let index = result.unwrap();
+
+        assert_eq!(index.len(), 1);
+        assert!(index[0].project_path.is_none(), "Relative project paths should be dropped");
     }
 
     #[test]

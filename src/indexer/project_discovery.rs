@@ -94,7 +94,19 @@ pub fn discover_projects(claude_dir: &Path) -> Result<Vec<ProjectInfo>> {
         let mut agent_files = Vec::new();
         match safe_open_dir(&path) {
             Ok(files) => {
-                for file in files.flatten() {
+                for entry in files {
+                    let file = match entry {
+                        Ok(file) => file,
+                        Err(err) => {
+                            eprintln!(
+                                "Warning: Failed to read file entry inside {}: {}",
+                                path.display(),
+                                err
+                            );
+                            continue;
+                        }
+                    };
+
                     let file_path = file.path();
                     if let Some(filename) = file_path.file_name() {
                         let filename_str = filename.to_string_lossy();
