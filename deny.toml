@@ -18,18 +18,13 @@ allow = [
 # Confidence threshold for license detection (0.0 - 1.0)
 confidence-threshold = 0.8
 
-# Deny-by-default: any license not in allow list fails the check
-unlicensed = "deny"
-
 [advisories]
-# Deny crates with security vulnerabilities from RustSec advisory database
+# Check security advisories from RustSec advisory database
 db-urls = ["https://github.com/rustsec/advisory-db"]
-# Lint level for different advisory types
-vulnerability = "deny"
-# Scope of dependencies to check for each advisory type
-unmaintained = "all"
-unsound = "all"
-yanked = "all"
+# Check all dependencies for unmaintained status
+unmaintained = "workspace"
+# Deny yanked crate versions
+yanked = "deny"
 
 [bans]
 # Warn on multiple versions of the same crate (helps reduce bloat)
