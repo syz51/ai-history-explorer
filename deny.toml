@@ -24,10 +24,12 @@ unlicensed = "deny"
 [advisories]
 # Deny crates with security vulnerabilities from RustSec advisory database
 db-urls = ["https://github.com/rustsec/advisory-db"]
+# Lint level for different advisory types
 vulnerability = "deny"
-unmaintained = "warn"
-unsound = "warn"
-yanked = "warn"
+# Scope of dependencies to check for each advisory type
+unmaintained = "all"
+unsound = "all"
+yanked = "all"
 
 [bans]
 # Warn on multiple versions of the same crate (helps reduce bloat)
