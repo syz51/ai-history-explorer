@@ -250,6 +250,7 @@ pub fn safe_open_file(path: &Path) -> Result<File> {
 
         // Check it's a regular file (not FIFO, device, etc.)
         let mode = metadata.mode();
+        #[allow(clippy::unnecessary_cast)]
         if mode & (libc::S_IFMT as u32) != (libc::S_IFREG as u32) {
             bail!("{} is not a regular file", path.display());
         }
