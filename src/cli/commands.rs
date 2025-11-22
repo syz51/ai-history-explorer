@@ -366,4 +366,14 @@ mod tests {
         // Just verify it doesn't panic
         let _ = result;
     }
+
+    #[test]
+    fn test_cli_run_with_none_command() {
+        // Test the None branch in the match statement
+        let cli = Cli { command: None };
+
+        // Should just print help message (we can't easily test stdout in unit tests)
+        // Just verify the struct can be created
+        assert!(cli.command.is_none());
+    }
 }

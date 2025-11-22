@@ -42,11 +42,7 @@ impl App {
     pub fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
         while !self.should_quit {
             // Get latest match results from nucleo
-            let snapshot = self.nucleo.snapshot();
-            let matched_items: Vec<&SearchEntry> = snapshot
-                .matched_items(..snapshot.matched_item_count())
-                .map(|item| item.data)
-                .collect();
+            let matched_items = self.collect_matched_items();
 
             // Render UI
             terminal.draw(|f| {
@@ -59,6 +55,12 @@ impl App {
         }
 
         Ok(())
+    }
+
+    /// Collect matched items from nucleo snapshot (extracted for testing)
+    fn collect_matched_items(&self) -> Vec<&SearchEntry> {
+        let snapshot = self.nucleo.snapshot();
+        snapshot.matched_items(..snapshot.matched_item_count()).map(|item| item.data).collect()
     }
 
     /// Handle a user action (extracted for testing)
@@ -300,5 +302,66 @@ mod tests {
         assert_eq!(app.selected_idx, initial_state.0);
         assert_eq!(app.search_query, initial_state.1);
         assert_eq!(app.should_quit, initial_state.2);
+    }
+
+    #[test]
+    fn test_handle_action_copy_to_clipboard() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Just verify it doesn't panic (stub for Worker B)
+        app.handle_action(Action::CopyToClipboard, 1);
+    }
+
+    #[test]
+    fn test_handle_action_toggle_filter() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Just verify it doesn't panic (stub for Worker C)
+        app.handle_action(Action::ToggleFilter, 1);
+    }
+
+    #[test]
+    fn test_handle_action_toggle_focus() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Just verify it doesn't panic (TODO implementation)
+        app.handle_action(Action::ToggleFocus, 1);
+    }
+
+    #[test]
+    fn test_handle_action_refresh() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Just verify it doesn't panic (TODO implementation)
+        app.handle_action(Action::Refresh, 1);
+    }
+
+    #[test]
+    fn test_collect_matched_items_returns_all_when_no_search() {
+        let entries = vec![create_test_entry(), create_test_entry(), create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Nucleo needs to process items in background, tick to complete
+        app.nucleo.tick(10);
+
+        let matched = app.collect_matched_items();
+
+        // Without search query, all items should match
+        assert_eq!(matched.len(), 3);
+    }
+
+    #[test]
+    fn test_collect_matched_items_with_empty_entries() {
+        let mut app = App::new(vec![]);
+
+        app.nucleo.tick(10);
+
+        let matched = app.collect_matched_items();
+
+        assert_eq!(matched.len(), 0);
     }
 }
