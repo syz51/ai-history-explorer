@@ -115,19 +115,8 @@ fn test_clipboard_integration_special_characters() {
     }
 }
 
-#[test]
-fn test_clipboard_integration_error_cases() {
-    // Test empty text
-    let result = copy_to_clipboard("");
-    assert!(result.is_err(), "Should reject empty text");
-    assert!(result.unwrap_err().to_string().contains("empty"));
-
-    // Test oversized text
-    let large_text = "a".repeat(11 * 1024 * 1024); // 11MB
-    let result = copy_to_clipboard(&large_text);
-    assert!(result.is_err(), "Should reject text larger than 10MB");
-    assert!(result.unwrap_err().to_string().contains("too large"));
-}
+// Error validation tests are in unit tests (src/clipboard/mod.rs)
+// where they use MockClipboard to avoid system clipboard dependency
 
 #[test]
 fn test_clipboard_integration_realistic_conversation_entry() {
