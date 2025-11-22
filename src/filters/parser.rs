@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, anyhow};
+use chrono::NaiveDate;
 
 use super::ast::{FieldFilter, FilterExpr, FilterField, FilterOperator};
 
@@ -32,11 +33,10 @@ fn tokenize(input: &str) -> Result<Vec<Token>> {
         }
 
         // Try to parse a word or field:value
-        let start_pos = chars.clone().count();
         let word = read_word(&mut chars);
 
         if word.is_empty() {
-            return Err(anyhow!("Unexpected character at position {}", input.len() - start_pos));
+            return Err(anyhow!("Unexpected character in filter input"));
         }
 
         // Check if it's an operator keyword
@@ -235,39 +235,12 @@ fn validate_value(field: &FilterField, value: &str) -> Result<()> {
 
 /// Check if string is valid YYYY-MM-DD format
 fn is_valid_date_format(s: &str) -> bool {
+    // Enforce strict YYYY-MM-DD format (10 chars)
     if s.len() != 10 {
         return false;
     }
-
-    let parts: Vec<&str> = s.split('-').collect();
-    if parts.len() != 3 {
-        return false;
-    }
-
-    // Check YYYY
-    if parts[0].len() != 4 || !parts[0].chars().all(|c| c.is_ascii_digit()) {
-        return false;
-    }
-
-    // Check MM
-    if parts[1].len() != 2 || !parts[1].chars().all(|c| c.is_ascii_digit()) {
-        return false;
-    }
-    let month: u32 = parts[1].parse().unwrap_or(0);
-    if !(1..=12).contains(&month) {
-        return false;
-    }
-
-    // Check DD
-    if parts[2].len() != 2 || !parts[2].chars().all(|c| c.is_ascii_digit()) {
-        return false;
-    }
-    let day: u32 = parts[2].parse().unwrap_or(0);
-    if !(1..=31).contains(&day) {
-        return false;
-    }
-
-    true
+    // Use chrono for semantic validation (e.g., reject 2024-02-31)
+    NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()
 }
 
 #[cfg(test)]
@@ -346,13 +319,28 @@ mod tests {
 
     #[test]
     fn test_validate_date_format() {
+        // Valid dates
         assert!(is_valid_date_format("2024-01-15"));
         assert!(is_valid_date_format("2024-12-31"));
+        assert!(is_valid_date_format("2024-02-29")); // Leap year
+
+        // Invalid format
         assert!(!is_valid_date_format("2024-1-15")); // Single digit month
-        assert!(!is_valid_date_format("2024-13-01")); // Invalid month
-        assert!(!is_valid_date_format("2024-01-32")); // Invalid day
         assert!(!is_valid_date_format("24-01-15")); // 2-digit year
         assert!(!is_valid_date_format("2024/01/15")); // Wrong separator
+
+        // Invalid month
+        assert!(!is_valid_date_format("2024-13-01"));
+        assert!(!is_valid_date_format("2024-00-01"));
+
+        // Invalid day (format check)
+        assert!(!is_valid_date_format("2024-01-32"));
+
+        // Semantically invalid dates (format correct but date doesn't exist)
+        assert!(!is_valid_date_format("2024-02-31")); // Feb has max 29 days in 2024
+        assert!(!is_valid_date_format("2024-04-31")); // April has 30 days
+        assert!(!is_valid_date_format("2024-11-31")); // November has 30 days
+        assert!(!is_valid_date_format("2023-02-29")); // Not a leap year
     }
 
     #[test]
