@@ -22,6 +22,7 @@
 
 pub mod cli;
 pub mod clipboard;
+pub mod filters;
 pub mod indexer;
 pub mod models;
 pub mod parsers;
