@@ -21,6 +21,7 @@
 //! ```
 
 pub mod cli;
+pub mod index_storage;
 pub mod indexer;
 pub mod models;
 pub mod parsers;

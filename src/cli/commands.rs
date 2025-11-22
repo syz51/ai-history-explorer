@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use crate::indexer::build_index;
+use crate::indexer::build_index_with_cache;
 use crate::models::EntryType;
 use crate::utils::{format_path_with_tilde, get_claude_dir};
 
@@ -12,6 +12,10 @@ use crate::utils::{format_path_with_tilde, get_claude_dir};
 #[command(version = "0.1.0")]
 #[command(about = "Search through Claude Code conversation history", long_about = None)]
 pub struct Cli {
+    /// Force rebuild of index, ignoring existing cache
+    #[arg(long, global = true)]
+    pub no_cache: bool,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -27,7 +31,7 @@ pub fn run() -> Result<()> {
 
     match &cli.command {
         Some(Commands::Stats) => {
-            show_stats()?;
+            show_stats(cli.no_cache)?;
         }
         None => {
             println!("Use --help for usage information");
@@ -37,24 +41,24 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn show_stats() -> Result<()> {
-    show_stats_impl(None)
+fn show_stats(no_cache: bool) -> Result<()> {
+    show_stats_impl(None, no_cache)
 }
 
 // Internal implementation that allows passing in a custom claude_dir for testing
 #[cfg(not(test))]
-fn show_stats_impl(_claude_dir_override: Option<&Path>) -> Result<()> {
+fn show_stats_impl(_claude_dir_override: Option<&Path>, no_cache: bool) -> Result<()> {
     let claude_dir = get_claude_dir()?;
-    let index = build_index(&claude_dir)?;
+    let index = build_index_with_cache(&claude_dir, no_cache)?;
     print_stats(&index, &claude_dir);
     Ok(())
 }
 
 #[cfg(test)]
-fn show_stats_impl(claude_dir_override: Option<&Path>) -> Result<()> {
+fn show_stats_impl(claude_dir_override: Option<&Path>, no_cache: bool) -> Result<()> {
     let claude_dir =
         if let Some(dir) = claude_dir_override { dir.to_path_buf() } else { get_claude_dir()? };
-    let index = build_index(&claude_dir)?;
+    let index = build_index_with_cache(&claude_dir, no_cache)?;
     print_stats(&index, &claude_dir);
     Ok(())
 }
@@ -112,7 +116,7 @@ mod tests {
 {"display":"Test prompt 2","timestamp":1234567891,"sessionId":"550e8400-e29b-41d4-a716-446655440001"}"#;
         write_history_file(claude_dir.path(), history_content);
 
-        let result = show_stats_impl(Some(claude_dir.path()));
+        let result = show_stats_impl(Some(claude_dir.path()), true);
         assert!(result.is_ok());
     }
 
@@ -123,7 +127,7 @@ mod tests {
         // Create empty history.jsonl
         write_history_file(claude_dir.path(), "");
 
-        let result = show_stats_impl(Some(claude_dir.path()));
+        let result = show_stats_impl(Some(claude_dir.path()), true);
         assert!(result.is_ok());
     }
 
@@ -140,7 +144,7 @@ mod tests {
             env::set_var("HOME", "/nonexistent/directory");
         }
 
-        let result = show_stats_impl(None);
+        let result = show_stats_impl(None, true);
         // Should propagate error from get_claude_dir or build_index
         // The exact error depends on whether .claude exists
 

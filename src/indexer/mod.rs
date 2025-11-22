@@ -19,5 +19,5 @@
 pub mod builder;
 pub mod project_discovery;
 
-pub use builder::build_index;
+pub use builder::{build_index, build_index_with_cache};
 pub use project_discovery::discover_projects;

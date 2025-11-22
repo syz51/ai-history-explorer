@@ -70,6 +70,9 @@ pub fn decode_path(encoded: &str) -> PathBuf {
         Cow::Owned(ref s) => s.as_str(),
     };
 
+    // NOTE: Claude Code uses dash-based encoding which is ambiguous
+    // (can't distinguish path separator dashes from directory name dashes).
+    // For now, we keep dashes as-is. Cache keys use encoded_name to avoid this issue.
     // Add back the leading slash for absolute paths
     PathBuf::from(format!("/{}", decoded_str))
 }

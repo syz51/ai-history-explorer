@@ -15,11 +15,14 @@
 //! propagated via Result types.
 
 use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use indicatif::{ProgressBar, ProgressStyle};
 
+use crate::index_storage::{self, HistoryFileMetadata, IndexMetadata, ProjectMetadata};
 use crate::indexer::project_discovery::discover_projects;
 use crate::models::{ContentBlock, EntryType, MessageContent, SearchEntry};
 use crate::parsers::{parse_conversation_file, parse_history_file};
@@ -258,14 +261,202 @@ fn extract_text_from_content(content: &MessageContent) -> Vec<Cow<'_, str>> {
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub fn build_index(claude_dir: &Path) -> Result<Vec<SearchEntry>> {
+    build_index_with_cache(claude_dir, false)
+}
+
+pub fn build_index_with_cache(claude_dir: &Path, no_cache: bool) -> Result<Vec<SearchEntry>> {
+    let history_path = claude_dir.join("history.jsonl");
+
+    // Try loading cache unless --no-cache flag is set
+    if !no_cache {
+        match index_storage::load_index(claude_dir) {
+            Ok(Some((cached_entries, cached_metadata))) => {
+                // Cache loaded successfully, check staleness
+                match try_incremental_update(
+                    claude_dir,
+                    cached_entries,
+                    cached_metadata,
+                    &history_path,
+                ) {
+                    Ok(index) => return Ok(index),
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: Incremental update failed, falling back to full rebuild: {}",
+                            e
+                        );
+                        // Fall through to full rebuild
+                    }
+                }
+            }
+            Ok(None) => {
+                // No cache or version mismatch, fall through to full rebuild
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to load cache, rebuilding: {}", e);
+                // Fall through to full rebuild
+            }
+        }
+    }
+
+    // Full rebuild path
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner} {msg}")
+            .expect("Invalid spinner template"),
+    );
+    spinner.set_message("Building index...");
+    spinner.enable_steady_tick(std::time::Duration::from_millis(100));
+
+    let index = build_index_from_scratch(claude_dir, &history_path)?;
+
+    // Save cache
+    let metadata = create_metadata(claude_dir, &history_path)?;
+    if let Err(e) = index_storage::save_index(claude_dir, &index, &metadata) {
+        eprintln!("Warning: Failed to save cache: {}", e);
+        // Don't fail the entire operation if cache save fails
+    }
+
+    spinner.finish_with_message(format!("✓ Loaded {} entries", index.len()));
+
+    Ok(index)
+}
+
+fn try_incremental_update(
+    claude_dir: &Path,
+    cached_entries: Vec<SearchEntry>,
+    cached_metadata: IndexMetadata,
+    history_path: &Path,
+) -> Result<Vec<SearchEntry>> {
+    let mut index = cached_entries;
+    let mut needs_save = false;
+
+    // Check if history.jsonl changed
+    if history_path.exists() && cached_metadata.history_file.is_stale(history_path)? {
+        needs_save = true;
+        // Remove old history entries from cache
+        index.retain(|e| e.project_path.is_some());
+
+        // Parse history.jsonl from scratch (simpler than incremental)
+        match parse_history_file(history_path) {
+            Ok(entries) => {
+                for entry in entries {
+                    if entry.display.trim().is_empty() {
+                        continue;
+                    }
+                    let project_path = entry.project.as_ref().and_then(|p| {
+                        let path = PathBuf::from(p);
+                        if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+                            eprintln!(
+                                "Warning: Skipping entry with suspicious project path: {}",
+                                p
+                            );
+                            return None;
+                        }
+                        Some(path)
+                    });
+                    index.push(SearchEntry {
+                        entry_type: EntryType::UserPrompt,
+                        display_text: entry.display,
+                        timestamp: entry.timestamp,
+                        project_path,
+                        session_id: entry.session_id,
+                    });
+                }
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to parse history file: {}", e);
+            }
+        }
+    }
+
+    // Check projects for staleness
+    let current_projects = match discover_projects(claude_dir) {
+        Ok(projects) => projects,
+        Err(e) => {
+            eprintln!("Warning: Failed to discover projects: {}", e);
+            // Return cached entries without project updates
+            return Ok(index);
+        }
+    };
+    let mut new_metadata_projects = HashMap::new();
+
+    for project in &current_projects {
+        // Use encoded_name as cache key (unambiguous, avoids decode issues)
+        let project_key = project.encoded_name.clone();
+
+        // Check if project is new or stale
+        let is_stale = cached_metadata
+            .projects
+            .get(&project_key)
+            .map(|pm| pm.is_stale(&project.project_dir).unwrap_or(true))
+            .unwrap_or(true); // New project = stale
+
+        if is_stale {
+            needs_save = true;
+            // Remove old entries for this project
+            index.retain(|e| {
+                e.project_path.as_ref().map(|p| p != &project.decoded_path).unwrap_or(true)
+            });
+
+            // Reparse this project
+            let _ = parse_project(project, &mut index);
+        }
+
+        // Track metadata for this project
+        if let Ok(pm) = ProjectMetadata::from_path(&project.project_dir, project.agent_files.len())
+        {
+            new_metadata_projects.insert(project_key, pm);
+        }
+    }
+
+    // Remove cached entries for projects no longer in current scan
+    let current_project_paths: HashSet<_> =
+        current_projects.iter().map(|p| p.decoded_path.clone()).collect();
+
+    let initial_count = index.len();
+    index.retain(|e| {
+        // Keep non-project entries (history.jsonl entries)
+        if e.project_path.is_none() {
+            return true;
+        }
+        // Keep entries from projects in current scan
+        current_project_paths.contains(e.project_path.as_ref().unwrap())
+    });
+
+    if index.len() != initial_count {
+        needs_save = true;
+    }
+
+    if needs_save {
+        // Sort by timestamp (newest first)
+        index.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+        // Update and save metadata
+        let metadata = IndexMetadata {
+            version: index_storage::metadata::CACHE_VERSION,
+            history_file: HistoryFileMetadata::from_path(history_path)
+                .unwrap_or(HistoryFileMetadata { mtime_secs: 0, size: 0, max_timestamp: None }),
+            projects: new_metadata_projects,
+        };
+        index_storage::save_index(claude_dir, &index, &metadata)?;
+
+        eprintln!("Updated {} entries (incremental)", index.len());
+    } else {
+        eprintln!("Loaded {} entries (cached)", index.len());
+    }
+
+    Ok(index)
+}
+
+fn build_index_from_scratch(claude_dir: &Path, history_path: &Path) -> Result<Vec<SearchEntry>> {
     let mut index = Vec::new();
     let mut agent_files_success = 0;
     let mut agent_files_failed = 0;
 
     // Parse user prompts from history.jsonl
-    let history_path = claude_dir.join("history.jsonl");
     if history_path.exists() {
-        match parse_history_file(&history_path) {
+        match parse_history_file(history_path) {
             Ok(entries) => {
                 for entry in entries {
                     // Filter out whitespace-only entries (not useful for search)
@@ -307,70 +498,9 @@ pub fn build_index(claude_dir: &Path) -> Result<Vec<SearchEntry>> {
     match discover_projects(claude_dir) {
         Ok(projects) => {
             for project in projects {
-                for agent_file in project.agent_files {
-                    match parse_conversation_file(&agent_file) {
-                        Ok(entries) => {
-                            agent_files_success += 1;
-                            for entry in entries {
-                                // Include both user and assistant messages
-                                if entry.message.role == ENTRY_TYPE_USER
-                                    || entry.message.role == ENTRY_TYPE_ASSISTANT
-                                {
-                                    // Extract text from message content using helper function
-                                    let text_parts =
-                                        extract_text_from_content(&entry.message.content);
-
-                                    let display_text = if !text_parts.is_empty() {
-                                        // Pre-allocate capacity: sum of all text lengths + newlines between them
-                                        let total_len: usize =
-                                            text_parts.iter().map(|s| s.len()).sum();
-                                        let capacity =
-                                            total_len + text_parts.len().saturating_sub(1); // +1 for each newline
-
-                                        let mut result = String::with_capacity(capacity);
-                                        result.push_str(&text_parts[0]);
-                                        for text in &text_parts[1..] {
-                                            result.push('\n');
-                                            result.push_str(text);
-                                        }
-                                        result
-                                    } else {
-                                        String::new()
-                                    };
-
-                                    // Filter out entries with no text content (e.g., images without alt text)
-                                    // Also filter whitespace-only entries (not useful for search)
-                                    if display_text.trim().is_empty() {
-                                        continue;
-                                    }
-
-                                    // Determine entry type based on message role
-                                    let entry_type = if entry.message.role == ENTRY_TYPE_ASSISTANT {
-                                        EntryType::AgentMessage
-                                    } else {
-                                        EntryType::UserPrompt
-                                    };
-
-                                    index.push(SearchEntry {
-                                        entry_type,
-                                        display_text,
-                                        timestamp: entry.timestamp,
-                                        project_path: Some(project.decoded_path.clone()),
-                                        session_id: entry.session_id,
-                                    });
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            agent_files_failed += 1;
-                            eprintln!(
-                                "Warning: Failed to parse agent file {}: {}",
-                                agent_file.display(),
-                                e
-                            );
-                        }
-                    }
-                }
+                let (success, failed) = parse_project(&project, &mut index);
+                agent_files_success += success;
+                agent_files_failed += failed;
             }
         }
         Err(e) => {
@@ -404,6 +534,100 @@ pub fn build_index(claude_dir: &Path) -> Result<Vec<SearchEntry>> {
     index.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
     Ok(index)
+}
+
+fn parse_project(
+    project: &crate::models::ProjectInfo,
+    index: &mut Vec<SearchEntry>,
+) -> (usize, usize) {
+    let mut success = 0;
+    let mut failed = 0;
+
+    for agent_file in &project.agent_files {
+        match parse_conversation_file(agent_file) {
+            Ok(entries) => {
+                success += 1;
+                for entry in entries {
+                    if entry.message.role == ENTRY_TYPE_USER
+                        || entry.message.role == ENTRY_TYPE_ASSISTANT
+                    {
+                        let text_parts = extract_text_from_content(&entry.message.content);
+                        let display_text = if !text_parts.is_empty() {
+                            let total_len: usize = text_parts.iter().map(|s| s.len()).sum();
+                            let capacity = total_len + text_parts.len().saturating_sub(1);
+                            let mut result = String::with_capacity(capacity);
+                            result.push_str(&text_parts[0]);
+                            for text in &text_parts[1..] {
+                                result.push('\n');
+                                result.push_str(text);
+                            }
+                            result
+                        } else {
+                            String::new()
+                        };
+
+                        if display_text.trim().is_empty() {
+                            continue;
+                        }
+
+                        let entry_type = if entry.message.role == ENTRY_TYPE_ASSISTANT {
+                            EntryType::AgentMessage
+                        } else {
+                            EntryType::UserPrompt
+                        };
+
+                        index.push(SearchEntry {
+                            entry_type,
+                            display_text,
+                            timestamp: entry.timestamp,
+                            project_path: Some(project.decoded_path.clone()),
+                            session_id: entry.session_id,
+                        });
+                    }
+                }
+            }
+            Err(e) => {
+                failed += 1;
+                eprintln!("Warning: Failed to parse agent file {}: {}", agent_file.display(), e);
+            }
+        }
+    }
+
+    (success, failed)
+}
+
+fn create_metadata(claude_dir: &Path, history_path: &Path) -> Result<IndexMetadata> {
+    let history_file = if history_path.exists() {
+        HistoryFileMetadata::from_path(history_path)?
+    } else {
+        HistoryFileMetadata { mtime_secs: 0, size: 0, max_timestamp: None }
+    };
+
+    let mut project_metadata = HashMap::new();
+
+    match discover_projects(claude_dir) {
+        Ok(projects) => {
+            for project in projects {
+                // Use encoded_name as cache key (unambiguous, avoids decode issues)
+                let project_key = project.encoded_name.clone();
+                if let Ok(pm) =
+                    ProjectMetadata::from_path(&project.project_dir, project.agent_files.len())
+                {
+                    project_metadata.insert(project_key, pm);
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Warning: Failed to discover projects for metadata: {}", e);
+            // Continue with empty project metadata
+        }
+    }
+
+    Ok(IndexMetadata {
+        version: index_storage::metadata::CACHE_VERSION,
+        history_file,
+        projects: project_metadata,
+    })
 }
 
 #[cfg(test)]

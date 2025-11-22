@@ -13,7 +13,24 @@ AI History Explorer: CLI tool for searching/browsing Claude Code conversation hi
 ```bash
 cargo build
 cargo run -- stats
+
+# Force rebuild ignoring cache
+cargo run -- --no-cache stats
 ```
+
+**Cache:**
+
+Index is cached for fast startup (~50-200ms vs 2-5s). Each Claude directory gets isolated cache using path hash:
+- macOS: `~/Library/Caches/ai-history-explorer/<hash>/`
+- Linux: `~/.cache/ai-history-explorer/<hash>/`
+- Windows: `%LOCALAPPDATA%\ai-history-explorer\<hash>\`
+
+Where `<hash>` is first 12 chars of path hash (e.g., `abc123def456`). This ensures:
+- Test isolation (temp dirs get separate caches)
+- Multiple Claude directories supported without conflicts
+- Cache automatically invalidates when source files change
+
+Use `--no-cache` flag to force rebuild (useful for debugging).
 
 **Testing:**
 
@@ -110,6 +127,16 @@ Graceful degradation suitable for CLI tools: skip malformed individual entries/f
 
 **Path security:**
 Project directories use percent encoding (e.g., `/Users/foo/bar` → `-Users%2Ffoo%2Fbar`). All decoded paths validated against traversal attacks and must be absolute.
+
+**Persistent Index:**
+
+- Index cached to disk after building (bincode binary + JSON metadata)
+- Per-directory cache isolation: each Claude directory gets separate cache via path hash
+- Incremental updates: only parses changed files on subsequent runs
+- Staleness detection via mtime/size checks on history.jsonl and project directories
+- Stale project cleanup: cached entries for removed projects automatically purged
+- Automatic fallback to full rebuild if cache corrupted/version mismatch
+- Cache invalidation: content-change only (no time-based expiration)
 
 **Entry types:**
 
