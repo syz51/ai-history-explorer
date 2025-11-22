@@ -1,0 +1,12 @@
+coverage:
+  status:
+    # Overall project coverage - allow up to 2% drop
+    project:
+      default:
+        target: auto
+        threshold: 2%
+
+    # Coverage on new/changed code - require 95%
+    patch:
+      default:
+        target: 90%
