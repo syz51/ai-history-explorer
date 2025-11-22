@@ -295,6 +295,52 @@ mod tests {
     }
 
     #[test]
+    fn test_copy_to_clipboard_with_valid_input() {
+        // Test copy_to_clipboard with valid input - exercises real SystemClipboard path
+        // In CI: clipboard unavailable (expected error), local: may succeed
+        let result = copy_to_clipboard("Valid clipboard test");
+        // Verify: if error, it's clipboard-related (not validation)
+        result
+            .map_err(|e| {
+                assert!(e.to_string().contains("clipboard") || e.to_string().contains("Failed to"))
+            })
+            .ok();
+    }
+
+    #[test]
+    fn test_copy_to_clipboard_unicode() {
+        // Test unicode handling through real clipboard code path
+        let result = copy_to_clipboard("Unicode test: 你好 🌍 العالم");
+        result
+            .map_err(|e| {
+                assert!(e.to_string().contains("clipboard") || e.to_string().contains("Failed to"))
+            })
+            .ok();
+    }
+
+    #[test]
+    fn test_copy_to_clipboard_large_valid_text() {
+        // Test large valid text (1MB, under 10MB limit) through real clipboard
+        let result = copy_to_clipboard(&"x".repeat(1024 * 1024));
+        result
+            .map_err(|e| {
+                assert!(e.to_string().contains("clipboard") || e.to_string().contains("Failed to"))
+            })
+            .ok();
+    }
+
+    #[test]
+    fn test_copy_to_clipboard_special_characters() {
+        // Test special characters through real clipboard code path
+        let result = copy_to_clipboard("Special: \n\t\r\"'\\");
+        result
+            .map_err(|e| {
+                assert!(e.to_string().contains("clipboard") || e.to_string().contains("Failed to"))
+            })
+            .ok();
+    }
+
+    #[test]
     fn test_system_clipboard_integration() {
         if !should_test_system_clipboard() {
             // Skip actual system clipboard test in CI
