@@ -54,29 +54,38 @@ impl App {
             })?;
 
             // Handle events
-            match poll_event(Duration::from_millis(100))? {
-                Action::Quit => self.should_quit = true,
-                Action::MoveUp => self.move_selection(-1, matched_items.len()),
-                Action::MoveDown => self.move_selection(1, matched_items.len()),
-                Action::PageUp => self.move_selection(-10, matched_items.len()),
-                Action::PageDown => self.move_selection(10, matched_items.len()),
-                Action::UpdateSearch(c) => self.update_search(c),
-                Action::DeleteChar => self.delete_char(),
-                Action::CopyToClipboard => self.copy_to_clipboard(&matched_items),
-                Action::ToggleFilter => {
-                    // Stub for Worker C (filters)
-                }
-                Action::ToggleFocus => {
-                    // TODO: Implement focus toggle between results and preview
-                }
-                Action::Refresh => {
-                    // TODO: Implement index refresh
-                }
-                Action::None => {}
-            }
+            let action = poll_event(Duration::from_millis(100))?;
+            self.handle_action(action, matched_items.len());
         }
 
         Ok(())
+    }
+
+    /// Handle a user action (extracted for testing)
+    fn handle_action(&mut self, action: Action, total_items: usize) {
+        match action {
+            Action::Quit => self.should_quit = true,
+            Action::MoveUp => self.move_selection(-1, total_items),
+            Action::MoveDown => self.move_selection(1, total_items),
+            Action::PageUp => self.move_selection(-10, total_items),
+            Action::PageDown => self.move_selection(10, total_items),
+            Action::UpdateSearch(c) => self.update_search(c),
+            Action::DeleteChar => self.delete_char(),
+            Action::CopyToClipboard => {
+                // Stub for Worker B (clipboard integration)
+                eprintln!("TODO: Copy to clipboard");
+            }
+            Action::ToggleFilter => {
+                // Stub for Worker C (filters)
+            }
+            Action::ToggleFocus => {
+                // TODO: Implement focus toggle between results and preview
+            }
+            Action::Refresh => {
+                // TODO: Implement index refresh
+            }
+            Action::None => {}
+        }
     }
 
     fn move_selection(&mut self, delta: isize, total: usize) {
@@ -110,13 +119,6 @@ impl App {
             false,
         );
     }
-
-    fn copy_to_clipboard(&self, matched_items: &[&SearchEntry]) {
-        // Stub for Worker B (clipboard integration)
-        if let Some(entry) = matched_items.get(self.selected_idx) {
-            eprintln!("TODO: Copy to clipboard: {}", entry.display_text);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -124,6 +126,7 @@ mod tests {
     use chrono::{TimeZone, Utc};
 
     use super::*;
+    use crate::tui::events::Action;
 
     fn create_test_entry() -> SearchEntry {
         SearchEntry {
@@ -213,5 +216,89 @@ mod tests {
 
         app.delete_char();
         assert_eq!(app.search_query, "");
+    }
+
+    #[test]
+    fn test_handle_action_quit() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        assert!(!app.should_quit);
+        app.handle_action(Action::Quit, 1);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_handle_action_move_up() {
+        let entries = vec![create_test_entry(), create_test_entry()];
+        let mut app = App::new(entries);
+        app.selected_idx = 1;
+
+        app.handle_action(Action::MoveUp, 2);
+        assert_eq!(app.selected_idx, 0);
+    }
+
+    #[test]
+    fn test_handle_action_move_down() {
+        let entries = vec![create_test_entry(), create_test_entry()];
+        let mut app = App::new(entries);
+
+        app.handle_action(Action::MoveDown, 2);
+        assert_eq!(app.selected_idx, 1);
+    }
+
+    #[test]
+    fn test_handle_action_page_up() {
+        let entries = vec![create_test_entry(); 15];
+        let mut app = App::new(entries);
+        app.selected_idx = 14;
+
+        app.handle_action(Action::PageUp, 15);
+        assert_eq!(app.selected_idx, 4);
+    }
+
+    #[test]
+    fn test_handle_action_page_down() {
+        let entries = vec![create_test_entry(); 15];
+        let mut app = App::new(entries);
+
+        app.handle_action(Action::PageDown, 15);
+        assert_eq!(app.selected_idx, 10);
+    }
+
+    #[test]
+    fn test_handle_action_update_search() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        app.handle_action(Action::UpdateSearch('t'), 1);
+        assert_eq!(app.search_query, "t");
+
+        app.handle_action(Action::UpdateSearch('e'), 1);
+        assert_eq!(app.search_query, "te");
+    }
+
+    #[test]
+    fn test_handle_action_delete_char() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+        app.search_query = "test".to_string();
+
+        app.handle_action(Action::DeleteChar, 1);
+        assert_eq!(app.search_query, "tes");
+    }
+
+    #[test]
+    fn test_handle_action_none() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+        let initial_state = (app.selected_idx, app.search_query.clone(), app.should_quit);
+
+        app.handle_action(Action::None, 1);
+
+        // State should be unchanged
+        assert_eq!(app.selected_idx, initial_state.0);
+        assert_eq!(app.search_query, initial_state.1);
+        assert_eq!(app.should_quit, initial_state.2);
     }
 }

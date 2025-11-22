@@ -3,40 +3,38 @@ mod app;
 mod events;
 mod layout;
 mod rendering;
+mod terminal;
 mod timestamps;
-
-use std::io;
 
 use anyhow::Result;
 pub use app::App;
-use crossterm::execute;
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
+use terminal::TerminalManager;
 
 use crate::models::SearchEntry;
 
 /// Run the interactive TUI
 pub fn run_interactive(entries: Vec<SearchEntry>) -> Result<()> {
-    // Setup terminal
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    // Create app state
+    let mut manager = TerminalManager::new()?;
     let mut app = App::new(entries);
 
-    // Run event loop
-    let res = app.run(&mut terminal);
+    let result = app.run(manager.terminal_mut());
 
-    // Restore terminal
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
+    // Restore terminal (Drop will also clean up if this fails)
+    manager.restore()?;
 
-    res
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_run_interactive_with_empty_entries() {
+        // This would normally require a TTY, so we just test the app creation
+        let entries = vec![];
+        let app = App::new(entries);
+        // Verify app was created successfully
+        drop(app);
+    }
 }
