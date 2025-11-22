@@ -45,7 +45,8 @@ fn validate_clipboard_text(text: &str) -> Result<()> {
     Ok(())
 }
 
-/// Internal function for clipboard operations with dependency injection
+/// Internal function for clipboard operations with dependency injection (test use)
+#[cfg(test)]
 fn copy_with_provider(text: &str, provider: &mut dyn ClipboardProvider) -> Result<()> {
     validate_clipboard_text(text)?;
     provider.set_text(text)?;
@@ -74,8 +75,13 @@ fn copy_with_provider(text: &str, provider: &mut dyn ClipboardProvider) -> Resul
 /// - Linux: X11 (xclip/xsel) or Wayland (wl-clipboard)
 /// - Windows: Not officially supported in Phase 2
 pub fn copy_to_clipboard(text: &str) -> Result<()> {
+    // Validate first, before initializing clipboard (for better error messages in CI)
+    validate_clipboard_text(text)?;
+
+    // Initialize clipboard and copy text
     let mut clipboard = SystemClipboard::new()?;
-    copy_with_provider(text, &mut clipboard)
+    clipboard.set_text(text)?;
+    Ok(())
 }
 
 #[cfg(test)]
