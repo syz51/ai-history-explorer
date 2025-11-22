@@ -186,14 +186,13 @@ mod tests {
     #[test]
     fn test_copy_exactly_at_limit() {
         // Create exactly 10MB of text (should pass validation)
+        let mut mock = MockClipboard::new();
         let text_at_limit = "a".repeat(10 * 1024 * 1024);
-        let result = copy_to_clipboard(&text_at_limit);
+        let result = copy_with_provider(&text_at_limit, &mut mock);
 
-        // Should fail only due to clipboard unavailability, not size validation
-        if let Err(e) = result {
-            let err_msg = e.to_string().to_lowercase();
-            assert!(!err_msg.contains("too large"), "10MB exactly should pass validation: {}", e);
-        }
+        // Should succeed - 10MB is exactly at the limit
+        assert!(result.is_ok(), "10MB exactly should pass validation");
+        assert_eq!(mock.get_text().map(|s| s.len()), Some(10 * 1024 * 1024));
     }
 
     #[test]
@@ -235,34 +234,24 @@ mod tests {
     #[test]
     fn test_whitespace_only_text() {
         // Whitespace-only text should be accepted (not considered empty)
+        let mut mock = MockClipboard::new();
         let text = "   \n\t  ";
-        let result = copy_to_clipboard(text);
+        let result = copy_with_provider(text, &mut mock);
 
-        // Should fail only due to clipboard, not validation
-        if let Err(e) = result {
-            let err_msg = e.to_string().to_lowercase();
-            assert!(
-                !err_msg.contains("empty"),
-                "Whitespace should not be rejected as empty: {}",
-                e
-            );
-        }
+        // Should succeed - whitespace is not considered empty
+        assert!(result.is_ok(), "Whitespace should not be rejected as empty");
+        assert_eq!(mock.get_text(), Some(text));
     }
 
     #[test]
     fn test_single_character() {
         // Single character should be valid
-        let result = copy_to_clipboard("a");
+        let mut mock = MockClipboard::new();
+        let result = copy_with_provider("a", &mut mock);
 
-        // Should fail only due to clipboard, not validation
-        if let Err(e) = result {
-            let err_msg = e.to_string().to_lowercase();
-            assert!(
-                !err_msg.contains("empty") && !err_msg.contains("too large"),
-                "Single character should pass validation: {}",
-                e
-            );
-        }
+        // Should succeed - single character is valid
+        assert!(result.is_ok(), "Single character should pass validation");
+        assert_eq!(mock.get_text(), Some("a"));
     }
 
     #[test]
@@ -280,6 +269,23 @@ mod tests {
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("too large"));
+    }
+
+    #[test]
+    fn test_copy_to_clipboard_validates_before_clipboard_access() {
+        // Test that validation happens before clipboard initialization
+        // by using invalid input that will fail validation
+        let result = copy_to_clipboard("");
+
+        // Should get validation error, not clipboard error
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty"));
+
+        // Test with oversized input
+        let large = "a".repeat(11 * 1024 * 1024);
+        let result = copy_to_clipboard(&large);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too large"));
     }
 
     #[test]
