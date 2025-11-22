@@ -38,7 +38,7 @@ fn key_to_action(key: KeyEvent) -> Action {
 
         // Navigation (Vim/Emacs style)
         (KeyCode::Char('p'), KeyModifiers::CONTROL) => Action::MoveUp,
-        (KeyCode::Char('n'), KeyModifiers::CONTROL) => Action::MoveUp,
+        (KeyCode::Char('n'), KeyModifiers::CONTROL) => Action::MoveDown,
         (KeyCode::Up, _) => Action::MoveUp,
         (KeyCode::Down, _) => Action::MoveDown,
         (KeyCode::PageUp, _) => Action::PageUp,
@@ -82,7 +82,7 @@ mod tests {
         assert_eq!(key_to_action(ctrl_p), Action::MoveUp);
 
         let ctrl_n = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL);
-        assert_eq!(key_to_action(ctrl_n), Action::MoveUp);
+        assert_eq!(key_to_action(ctrl_n), Action::MoveDown);
     }
 
     #[test]

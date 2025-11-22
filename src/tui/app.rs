@@ -41,6 +41,9 @@ impl App {
 
     pub fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
         while !self.should_quit {
+            // Tick nucleo to process matches
+            self.nucleo.tick(10);
+
             // Get latest match results from nucleo
             let matched_items = self.collect_matched_items();
 
@@ -120,6 +123,8 @@ impl App {
             nucleo::pattern::Normalization::Smart,
             false,
         );
+        // Tick to apply the new pattern
+        self.nucleo.tick(10);
     }
 }
 

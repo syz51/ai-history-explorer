@@ -7,6 +7,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 use super::layout::AppLayout;
 use super::timestamps::format_timestamp;
 use crate::models::{EntryType, SearchEntry};
+use crate::utils::format_path_with_tilde;
 
 /// Render the entire UI
 pub fn render_ui(
@@ -41,14 +42,7 @@ fn render_results_list(
             let project = entry
                 .project_path
                 .as_ref()
-                .and_then(|p| p.to_str())
-                .map(|s| {
-                    if let Ok(home) = std::env::var("HOME") {
-                        s.replace(&home, "~")
-                    } else {
-                        s.to_string()
-                    }
-                })
+                .map(|p| format_path_with_tilde(p))
                 .unwrap_or_else(|| "global".to_string());
 
             // Truncate display text for list view (first line only)
@@ -92,14 +86,7 @@ fn render_preview(frame: &mut Frame, area: Rect, entry: Option<&SearchEntry>) {
         let project = entry
             .project_path
             .as_ref()
-            .and_then(|p| p.to_str())
-            .map(|s| {
-                if let Ok(home) = std::env::var("HOME") {
-                    s.replace(&home, "~")
-                } else {
-                    s.to_string()
-                }
-            })
+            .map(|p| format_path_with_tilde(p))
             .unwrap_or_else(|| "global".to_string());
         let session_id = entry.session_id.clone();
 
