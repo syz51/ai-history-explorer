@@ -20,6 +20,8 @@ pub struct Cli {
 pub enum Commands {
     /// Show statistics about the history
     Stats,
+    /// Launch interactive fuzzy-finder TUI
+    Interactive,
 }
 
 pub fn run() -> Result<()> {
@@ -29,12 +31,21 @@ pub fn run() -> Result<()> {
         Some(Commands::Stats) => {
             show_stats()?;
         }
+        Some(Commands::Interactive) => {
+            run_interactive()?;
+        }
         None => {
             println!("Use --help for usage information");
         }
     }
 
     Ok(())
+}
+
+fn run_interactive() -> Result<()> {
+    let claude_dir = get_claude_dir()?;
+    let index = build_index(&claude_dir)?;
+    crate::tui::run_interactive(index)
 }
 
 fn show_stats() -> Result<()> {

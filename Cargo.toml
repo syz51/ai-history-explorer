@@ -20,6 +20,10 @@ chrono = { version = "0.4", features = ["serde"] }
 percent-encoding = "2.3"
 uuid = "1.11"
 walkdir = "2"
+# TUI dependencies (Phase 2)
+nucleo = "0.5"
+ratatui = "0.29"
+crossterm = "0.28"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

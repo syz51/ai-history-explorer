@@ -1,0 +1,105 @@
+use std::time::Duration;
+
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+
+/// User actions from keyboard events
+#[derive(Debug, PartialEq)]
+pub enum Action {
+    Quit,
+    MoveUp,
+    MoveDown,
+    PageUp,
+    PageDown,
+    CopyToClipboard,
+    ToggleFilter,
+    ToggleFocus,
+    Refresh,
+    UpdateSearch(char),
+    DeleteChar,
+    None,
+}
+
+/// Poll for keyboard events and convert to actions
+pub fn poll_event(timeout: Duration) -> anyhow::Result<Action> {
+    if event::poll(timeout)?
+        && let Event::Key(key) = event::read()?
+    {
+        return Ok(key_to_action(key));
+    }
+    Ok(Action::None)
+}
+
+fn key_to_action(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        // Quit
+        (KeyCode::Char('c'), KeyModifiers::CONTROL) => Action::Quit,
+        (KeyCode::Esc, _) => Action::Quit,
+        (KeyCode::Char('q'), KeyModifiers::NONE) => Action::Quit,
+
+        // Navigation (Vim/Emacs style)
+        (KeyCode::Char('p'), KeyModifiers::CONTROL) => Action::MoveUp,
+        (KeyCode::Char('n'), KeyModifiers::CONTROL) => Action::MoveUp,
+        (KeyCode::Up, _) => Action::MoveUp,
+        (KeyCode::Down, _) => Action::MoveDown,
+        (KeyCode::PageUp, _) => Action::PageUp,
+        (KeyCode::PageDown, _) => Action::PageDown,
+
+        // Actions
+        (KeyCode::Enter, _) => Action::CopyToClipboard,
+        (KeyCode::Char('/'), KeyModifiers::NONE) => Action::ToggleFilter,
+        (KeyCode::Tab, _) => Action::ToggleFocus,
+        (KeyCode::Char('r'), KeyModifiers::CONTROL) => Action::Refresh,
+
+        // Search input
+        (KeyCode::Char(c), KeyModifiers::NONE) | (KeyCode::Char(c), KeyModifiers::SHIFT) => {
+            Action::UpdateSearch(c)
+        }
+        (KeyCode::Backspace, _) => Action::DeleteChar,
+
+        _ => Action::None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_quit_actions() {
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(key_to_action(ctrl_c), Action::Quit);
+
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(key_to_action(esc), Action::Quit);
+
+        let q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
+        assert_eq!(key_to_action(q), Action::Quit);
+    }
+
+    #[test]
+    fn test_navigation_vim_style() {
+        let ctrl_p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
+        assert_eq!(key_to_action(ctrl_p), Action::MoveUp);
+
+        let ctrl_n = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL);
+        assert_eq!(key_to_action(ctrl_n), Action::MoveUp);
+    }
+
+    #[test]
+    fn test_navigation_arrows() {
+        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(key_to_action(up), Action::MoveUp);
+
+        let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(key_to_action(down), Action::MoveDown);
+    }
+
+    #[test]
+    fn test_search_input() {
+        let char_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        assert_eq!(key_to_action(char_a), Action::UpdateSearch('a'));
+
+        let backspace = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(key_to_action(backspace), Action::DeleteChar);
+    }
+}
