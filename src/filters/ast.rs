@@ -104,4 +104,12 @@ mod tests {
         assert_eq!(expr.operators.len(), 1);
         assert_eq!(expr.operators[0], FilterOperator::And);
     }
+
+    #[test]
+    fn test_filter_expr_default() {
+        let expr = FilterExpr::default();
+        assert!(expr.is_empty());
+        assert_eq!(expr.filters.len(), 0);
+        assert_eq!(expr.operators.len(), 0);
+    }
 }

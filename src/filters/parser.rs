@@ -436,4 +436,17 @@ mod tests {
         assert_eq!(expr.operators[0], FilterOperator::And);
         assert_eq!(expr.operators[1], FilterOperator::And); // Implicit AND between type and since
     }
+
+    #[test]
+    fn test_tokenize_empty_field_or_value() {
+        // Empty field
+        let result = tokenize(":value");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid field:value"));
+
+        // Empty value
+        let result2 = tokenize("field:");
+        assert!(result2.is_err());
+        assert!(result2.unwrap_err().to_string().contains("Invalid field:value"));
+    }
 }

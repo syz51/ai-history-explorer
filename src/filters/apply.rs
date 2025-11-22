@@ -152,6 +152,20 @@ mod tests {
     }
 
     #[test]
+    fn test_match_project_tilde_expansion() {
+        // Get home directory
+        if let Some(home) = dirs::home_dir() {
+            let home_str = home.to_string_lossy();
+            let test_path = format!("{}/projects/foo", home_str);
+            let entry = create_test_entry(EntryType::UserPrompt, Some(&test_path), Utc::now());
+
+            // Should match with tilde
+            assert!(match_project(&entry, "~/projects"));
+            assert!(match_project(&entry, "~/projects/foo"));
+        }
+    }
+
+    #[test]
     fn test_match_type_user() {
         let entry = create_test_entry(EntryType::UserPrompt, Some("/foo"), Utc::now());
         assert!(match_type(&entry, "user"));
