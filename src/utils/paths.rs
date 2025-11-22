@@ -922,4 +922,40 @@ mod tests {
         let result = safe_open_file(&link);
         assert!(result.is_err(), "safe_open_file should reject hard links on Windows");
     }
+
+    #[test]
+    fn test_safe_open_file_nonexistent() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let nonexistent = temp_dir.path().join("nonexistent.jsonl");
+
+        let result = safe_open_file(&nonexistent);
+        assert!(result.is_err(), "safe_open_file should fail on nonexistent file");
+    }
+
+    #[test]
+    fn test_safe_open_file_directory() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path().join("subdir");
+        std::fs::create_dir(&dir).unwrap();
+
+        let result = safe_open_file(&dir);
+        assert!(result.is_err(), "safe_open_file should reject directories");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_safe_open_file_regular_file_success() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("regular.jsonl");
+        std::fs::write(&file, b"test content").unwrap();
+
+        let result = safe_open_file(&file);
+        assert!(result.is_ok(), "safe_open_file should succeed on regular file");
+    }
 }
