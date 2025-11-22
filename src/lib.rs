@@ -21,6 +21,7 @@
 //! ```
 
 pub mod cli;
+pub mod clipboard;
 pub mod filters;
 pub mod indexer;
 pub mod models;
@@ -29,6 +30,7 @@ pub mod tui;
 pub mod utils;
 
 // Re-export commonly used types
+pub use clipboard::copy_to_clipboard;
 pub use indexer::builder::build_index;
 pub use models::search::SearchEntry;
 pub use parsers::history::parse_history_file;
