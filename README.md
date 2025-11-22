@@ -7,6 +7,8 @@ CLI tool for searching and browsing Claude Code conversation history stored in `
 
 ## Features
 
+- **Interactive fuzzy search TUI** with real-time filtering
+- **Advanced filter syntax** for precise searching (project, type, date)
 - Parses user prompts from `history.jsonl`
 - Extracts agent conversations from project directories
 - Builds searchable indexes combining all conversation data
@@ -44,8 +46,67 @@ cargo install --path .
 
 ## Usage
 
+### Interactive Mode (Recommended)
+
+Launch the interactive fuzzy finder TUI:
+
 ```bash
-# Show statistics about your Claude Code history
+ai-history-explorer interactive
+```
+
+### Filter Syntax
+
+Filters use `field:value` syntax. Combine filters with the fuzzy search using the `|` separator:
+
+```
+project:name type:user | fuzzy search terms
+^^^^^^^^^^^^^^^         ^^^^^^^^^^^^^^^^^^^
+Filter portion           Fuzzy portion
+```
+
+**Supported Fields:**
+
+- `project:<name>` - Filter by project path (case-insensitive, partial match)
+  - Example: `project:ai-history` matches `/Users/you/ai-history-explorer`
+  - Supports `~` expansion: `project:~/Documents`
+- `type:<user|agent>` - Filter by entry type
+  - `type:user` - Only user prompts
+  - `type:agent` - Only agent responses
+- `since:<YYYY-MM-DD>` - Filter entries after date
+  - Example: `since:2024-01-15`
+
+**Operators:**
+
+- **AND** (default between different fields): `project:foo type:user`
+- **OR** (default within same field): `project:foo project:bar`
+- Explicit operators: `project:foo AND type:user` or `type:user OR type:agent`
+
+**Examples:**
+
+```
+project:ai-history | implement tui
+type:user | refactor
+project:ai-history type:user | search
+since:2024-01-01 | recent changes
+```
+
+### Keybindings
+
+**Navigation:**
+- `↑` / `Ctrl+p` - Previous entry
+- `↓` / `Ctrl+n` - Next entry
+- `Page Up` / `Page Down` - Scroll preview
+
+**Actions:**
+- `Enter` - Apply filters
+- `Esc` - Clear input (or quit if empty)
+- `Ctrl+C` - Quit
+
+### Stats Mode
+
+Show statistics about your conversation history:
+
+```bash
 ai-history-explorer stats
 ```
 

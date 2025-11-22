@@ -8,6 +8,9 @@ use ratatui::backend::Backend;
 
 use super::events::{Action, poll_event};
 use super::rendering::render_ui;
+use crate::filters::apply::apply_filters;
+use crate::filters::ast::FilterExpr;
+use crate::filters::parser::parse_filter;
 use crate::models::SearchEntry;
 
 pub struct App {
@@ -15,6 +18,11 @@ pub struct App {
     selected_idx: usize,
     search_query: String,
     should_quit: bool,
+    // Filter integration fields
+    all_entries: Vec<SearchEntry>,
+    filtered_entries: Vec<SearchEntry>,
+    current_filter: Option<FilterExpr>,
+    filter_error: Option<String>,
 }
 
 impl App {
@@ -36,7 +44,19 @@ impl App {
             });
         }
 
-        Self { nucleo, selected_idx: 0, search_query: String::new(), should_quit: false }
+        // Initialize filter state
+        let filtered_entries = entries.clone();
+
+        Self {
+            nucleo,
+            selected_idx: 0,
+            search_query: String::new(),
+            should_quit: false,
+            all_entries: entries,
+            filtered_entries,
+            current_filter: None,
+            filter_error: None,
+        }
     }
 
     pub fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
@@ -49,7 +69,14 @@ impl App {
 
             // Render UI
             terminal.draw(|f| {
-                render_ui(f, &matched_items, self.selected_idx, &self.search_query);
+                render_ui(
+                    f,
+                    &matched_items,
+                    self.selected_idx,
+                    &self.search_query,
+                    self.all_entries.len(),
+                    self.filter_error.as_deref(),
+                );
             })?;
 
             // Handle events
@@ -85,6 +112,7 @@ impl App {
             Action::PageDown => self.move_selection(10, total_items),
             Action::UpdateSearch(c) => self.update_search(c),
             Action::DeleteChar => self.delete_char(),
+            Action::ApplyFilter => self.apply_filter(),
             Action::CopyToClipboard => {
                 // Stub for Worker B (clipboard integration)
                 eprintln!("TODO: Copy to clipboard");
@@ -128,15 +156,103 @@ impl App {
     }
 
     fn update_nucleo_pattern(&mut self) {
+        // Extract fuzzy portion (right of |, or full query if no |)
+        let fuzzy_query = self.extract_fuzzy_portion();
+
         self.nucleo.pattern.reparse(
             0,
-            &self.search_query,
+            &fuzzy_query,
             nucleo::pattern::CaseMatching::Smart,
             nucleo::pattern::Normalization::Smart,
             false,
         );
         // Tick to apply the new pattern
         self.nucleo.tick(10);
+    }
+
+    /// Extract filter and fuzzy portions from search_query
+    /// Returns (filter_portion, fuzzy_portion)
+    fn parse_input(&self) -> (Option<&str>, &str) {
+        if let Some(pipe_pos) = self.search_query.find('|') {
+            let filter_part = self.search_query[..pipe_pos].trim();
+            let fuzzy_part = self.search_query[pipe_pos + 1..].trim();
+
+            let filter = if filter_part.is_empty() { None } else { Some(filter_part) };
+
+            (filter, fuzzy_part)
+        } else {
+            // No pipe: treat entire input as fuzzy search
+            (None, self.search_query.as_str())
+        }
+    }
+
+    /// Extract only the fuzzy portion for nucleo pattern matching
+    fn extract_fuzzy_portion(&self) -> String {
+        self.parse_input().1.to_string()
+    }
+
+    /// Extract only the filter portion (if present)
+    fn extract_filter_portion(&self) -> Option<String> {
+        self.parse_input().0.map(|s| s.to_string())
+    }
+
+    /// Apply filters from the filter portion of the input
+    fn apply_filter(&mut self) {
+        // Extract filter portion
+        let filter_str = match self.extract_filter_portion() {
+            Some(s) => s,
+            None => {
+                // No filter: reset to all entries
+                self.current_filter = None;
+                self.filter_error = None;
+                self.filtered_entries = self.all_entries.clone();
+                self.re_inject_entries();
+                return;
+            }
+        };
+
+        // Parse filter
+        match parse_filter(&filter_str) {
+            Ok(filter_expr) => {
+                // Apply filter (clone all_entries as apply_filters takes ownership)
+                match apply_filters(self.all_entries.clone(), &filter_expr) {
+                    Ok(filtered) => {
+                        self.filtered_entries = filtered;
+                        self.current_filter = Some(filter_expr);
+                        self.filter_error = None;
+                        self.re_inject_entries();
+                    }
+                    Err(e) => {
+                        self.filter_error = Some(format!("Filter error: {}", e));
+                    }
+                }
+            }
+            Err(e) => {
+                self.filter_error =
+                    Some(format!("Parse error: {} | Try: project:name type:user | search", e));
+            }
+        }
+    }
+
+    /// Re-inject filtered entries into nucleo matcher
+    fn re_inject_entries(&mut self) {
+        // Clear existing entries
+        self.nucleo = Nucleo::new(Config::DEFAULT, Arc::new(|| {}), None, 1);
+
+        // Inject filtered entries
+        let injector = self.nucleo.injector();
+        for entry in &self.filtered_entries {
+            let display_text = entry.display_text.clone();
+            injector.push(entry.clone(), move |_entry, cols| {
+                cols[0] = display_text.clone().into();
+            });
+        }
+
+        // Re-apply fuzzy pattern
+        self.update_nucleo_pattern();
+
+        // Reset selection
+        self.selected_idx = 0;
     }
 }
 
@@ -429,5 +545,77 @@ mod tests {
 
         assert_eq!(app.search_query.len(), 256);
         assert!(!app.search_query.contains('b'));
+    }
+
+    #[test]
+    fn test_parse_input_no_pipe() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+        app.search_query = "fuzzy search".to_string();
+
+        let (filter, fuzzy) = app.parse_input();
+
+        assert_eq!(filter, None);
+        assert_eq!(fuzzy, "fuzzy search");
+    }
+
+    #[test]
+    fn test_parse_input_with_pipe() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+        app.search_query = "project:foo | fuzzy".to_string();
+
+        let (filter, fuzzy) = app.parse_input();
+
+        assert_eq!(filter, Some("project:foo"));
+        assert_eq!(fuzzy, "fuzzy");
+    }
+
+    #[test]
+    fn test_parse_input_empty_filter() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+        app.search_query = "| fuzzy".to_string();
+
+        let (filter, fuzzy) = app.parse_input();
+
+        assert_eq!(filter, None);
+        assert_eq!(fuzzy, "fuzzy");
+    }
+
+    #[test]
+    fn test_parse_input_empty_fuzzy() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+        app.search_query = "project:foo |".to_string();
+
+        let (filter, fuzzy) = app.parse_input();
+
+        assert_eq!(filter, Some("project:foo"));
+        assert_eq!(fuzzy, "");
+    }
+
+    #[test]
+    fn test_extract_fuzzy_portion() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        app.search_query = "project:foo | tui".to_string();
+        assert_eq!(app.extract_fuzzy_portion(), "tui");
+
+        app.search_query = "no pipe here".to_string();
+        assert_eq!(app.extract_fuzzy_portion(), "no pipe here");
+    }
+
+    #[test]
+    fn test_extract_filter_portion() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        app.search_query = "project:foo | tui".to_string();
+        assert_eq!(app.extract_filter_portion(), Some("project:foo".to_string()));
+
+        app.search_query = "no pipe here".to_string();
+        assert_eq!(app.extract_filter_portion(), None);
     }
 }

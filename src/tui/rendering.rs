@@ -15,12 +15,22 @@ pub fn render_ui(
     entries: &[&SearchEntry],
     selected_idx: usize,
     search_query: &str,
+    total_entries: usize,
+    filter_error: Option<&str>,
 ) {
     let layout = AppLayout::new(frame.area());
 
     render_results_list(frame, layout.results_area, entries, selected_idx);
     render_preview(frame, layout.preview_area, entries.get(selected_idx).copied());
-    render_status_bar(frame, layout.status_area, entries.len(), selected_idx, search_query);
+    render_status_bar(
+        frame,
+        layout.status_area,
+        entries.len(),
+        total_entries,
+        selected_idx,
+        search_query,
+        filter_error,
+    );
 }
 
 fn render_results_list(
@@ -131,32 +141,72 @@ fn render_preview(frame: &mut Frame, area: Rect, entry: Option<&SearchEntry>) {
 fn render_status_bar(
     frame: &mut Frame,
     area: Rect,
-    total_entries: usize,
+    filtered_count: usize,
+    total_count: usize,
     selected_idx: usize,
     search_query: &str,
+    filter_error: Option<&str>,
 ) {
-    let status_text = if total_entries == 0 {
-        " No entries | Enter: copy | /: filter | Ctrl+C: quit ".to_string()
-    } else if search_query.is_empty() {
-        format!(
-            " Showing {} entries | Entry {}/{} | Enter: copy | /: filter | Ctrl+C: quit ",
-            total_entries,
-            selected_idx + 1,
-            total_entries
+    // Parse input to extract filter portion
+    let (filter_part, fuzzy_part) = if let Some(pipe_pos) = search_query.find('|') {
+        let filter = search_query[..pipe_pos].trim();
+        let fuzzy = search_query[pipe_pos + 1..].trim();
+        (if filter.is_empty() { None } else { Some(filter) }, fuzzy)
+    } else {
+        (None, search_query)
+    };
+
+    let (status_text, style) = if let Some(error) = filter_error {
+        // Show error in red
+        (
+            format!(" [ERROR] {} ", error),
+            Style::default().fg(Color::Rgb(239, 68, 68)).bg(Color::Rgb(24, 24, 27)), // Red
+        )
+    } else if filtered_count == 0 {
+        (
+            " No entries | Enter: apply filter | Esc: clear | Ctrl+C: quit ".to_string(),
+            Style::default().fg(Color::Rgb(250, 250, 250)).bg(Color::Rgb(24, 24, 27)),
         )
     } else {
-        format!(
-            " Search: {} | {} results | Entry {}/{} | Esc: clear | Enter: copy ",
-            search_query,
-            total_entries,
-            selected_idx + 1,
-            total_entries
+        let mut parts = vec![];
+
+        // Mode indicator
+        parts.push("[FUZZY]".to_string());
+
+        // Match counts
+        if filtered_count < total_count {
+            parts.push(format!(
+                "{}/{} filtered ({} total)",
+                filtered_count, filtered_count, total_count
+            ));
+        } else {
+            parts.push(format!("{} entries", total_count));
+        }
+
+        // Active filter
+        if let Some(filter) = filter_part {
+            parts.push(format!("filter: {}", filter));
+        }
+
+        // Current selection
+        if filtered_count > 0 {
+            parts.push(format!("entry {}/{}", selected_idx + 1, filtered_count));
+        }
+
+        // Keybindings
+        if !fuzzy_part.is_empty() {
+            parts.push("Esc: clear".to_string());
+        }
+        parts.push("Enter: apply".to_string());
+        parts.push("Ctrl+C: quit".to_string());
+
+        (
+            format!(" {} ", parts.join(" | ")),
+            Style::default().fg(Color::Rgb(250, 250, 250)).bg(Color::Rgb(24, 24, 27)),
         )
     };
 
-    let paragraph = Paragraph::new(status_text).style(
-        Style::default().fg(Color::Rgb(250, 250, 250)).bg(Color::Rgb(24, 24, 27)), // Dark zinc
-    );
+    let paragraph = Paragraph::new(status_text).style(style);
 
     frame.render_widget(paragraph, area);
 }
@@ -189,7 +239,7 @@ mod tests {
 
         terminal
             .draw(|f| {
-                render_ui(f, &entry_refs, 0, "test");
+                render_ui(f, &entry_refs, 0, "test", 2, None);
             })
             .unwrap();
 
@@ -205,7 +255,7 @@ mod tests {
 
         terminal
             .draw(|f| {
-                render_ui(f, &entries, 0, "");
+                render_ui(f, &entries, 0, "", 0, None);
             })
             .unwrap();
     }
@@ -282,7 +332,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                render_status_bar(f, area, 10, 5, "search query");
+                render_status_bar(f, area, 10, 10, 5, "search query", None);
             })
             .unwrap();
     }
@@ -295,7 +345,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                render_status_bar(f, area, 10, 0, "");
+                render_status_bar(f, area, 10, 10, 0, "", None);
             })
             .unwrap();
     }
@@ -323,7 +373,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                render_status_bar(f, area, 0, 0, "");
+                render_status_bar(f, area, 0, 0, 0, "", None);
             })
             .unwrap();
     }
