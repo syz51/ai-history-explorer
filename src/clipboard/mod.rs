@@ -163,7 +163,9 @@ mod tests {
 
     #[test]
     fn test_copy_empty_text() {
-        let result = copy_to_clipboard("");
+        let mut mock = MockClipboard::new();
+        let result = copy_with_provider("", &mut mock);
+
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("empty"));
@@ -172,8 +174,9 @@ mod tests {
     #[test]
     fn test_copy_large_text() {
         // Create 11MB of text (exceeds 10MB limit)
+        let mut mock = MockClipboard::new();
         let large_text = "a".repeat(11 * 1024 * 1024);
-        let result = copy_to_clipboard(&large_text);
+        let result = copy_with_provider(&large_text, &mut mock);
 
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
@@ -196,8 +199,9 @@ mod tests {
     #[test]
     fn test_copy_one_byte_over_limit() {
         // Create 10MB + 1 byte (should fail validation)
+        let mut mock = MockClipboard::new();
         let text_over_limit = "a".repeat(10 * 1024 * 1024 + 1);
-        let result = copy_to_clipboard(&text_over_limit);
+        let result = copy_with_provider(&text_over_limit, &mut mock);
 
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
@@ -207,8 +211,9 @@ mod tests {
     #[test]
     fn test_error_message_includes_size_info() {
         // Test that error messages include helpful size information
+        let mut mock = MockClipboard::new();
         let large_text = "a".repeat(15 * 1024 * 1024);
-        let result = copy_to_clipboard(&large_text);
+        let result = copy_with_provider(&large_text, &mut mock);
 
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
@@ -219,7 +224,8 @@ mod tests {
     #[test]
     fn test_empty_text_error_message() {
         // Test that empty text has clear error message
-        let result = copy_to_clipboard("");
+        let mut mock = MockClipboard::new();
+        let result = copy_with_provider("", &mut mock);
 
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
@@ -267,8 +273,9 @@ mod tests {
         assert_eq!(emoji.len(), 4); // Verify it's 4 bytes
 
         // Create text with multibyte characters
+        let mut mock = MockClipboard::new();
         let text = emoji.repeat(3 * 1024 * 1024); // 12MB in bytes
-        let result = copy_to_clipboard(&text);
+        let result = copy_with_provider(&text, &mut mock);
 
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
