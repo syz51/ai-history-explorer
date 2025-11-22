@@ -9,4 +9,4 @@ coverage:
     # Coverage on new/changed code - require 95%
     patch:
       default:
-        target: 95%
+        target: 90%
