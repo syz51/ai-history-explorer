@@ -6,6 +6,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 #[derive(Debug, PartialEq)]
 pub enum Action {
     Quit,
+    ClearSearch,
     MoveUp,
     MoveDown,
     PageUp,
@@ -33,8 +34,7 @@ fn key_to_action(key: KeyEvent) -> Action {
     match (key.code, key.modifiers) {
         // Quit
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => Action::Quit,
-        (KeyCode::Esc, _) => Action::Quit,
-        (KeyCode::Char('q'), KeyModifiers::NONE) => Action::Quit,
+        (KeyCode::Esc, _) => Action::ClearSearch,
 
         // Navigation (Vim/Emacs style)
         (KeyCode::Char('p'), KeyModifiers::CONTROL) => Action::MoveUp,
@@ -68,12 +68,12 @@ mod tests {
     fn test_quit_actions() {
         let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(key_to_action(ctrl_c), Action::Quit);
+    }
 
+    #[test]
+    fn test_clear_search_action() {
         let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-        assert_eq!(key_to_action(esc), Action::Quit);
-
-        let q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
-        assert_eq!(key_to_action(q), Action::Quit);
+        assert_eq!(key_to_action(esc), Action::ClearSearch);
     }
 
     #[test]
@@ -98,6 +98,9 @@ mod tests {
     fn test_search_input() {
         let char_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
         assert_eq!(key_to_action(char_a), Action::UpdateSearch('a'));
+
+        let char_q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
+        assert_eq!(key_to_action(char_q), Action::UpdateSearch('q'));
 
         let backspace = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
         assert_eq!(key_to_action(backspace), Action::DeleteChar);

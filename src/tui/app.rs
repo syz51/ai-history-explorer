@@ -70,6 +70,15 @@ impl App {
     fn handle_action(&mut self, action: Action, total_items: usize) {
         match action {
             Action::Quit => self.should_quit = true,
+            Action::ClearSearch => {
+                if self.search_query.is_empty() {
+                    self.should_quit = true;
+                } else {
+                    self.search_query.clear();
+                    self.update_nucleo_pattern();
+                    self.selected_idx = 0;
+                }
+            }
             Action::MoveUp => self.move_selection(-1, total_items),
             Action::MoveDown => self.move_selection(1, total_items),
             Action::PageUp => self.move_selection(-10, total_items),
@@ -104,9 +113,12 @@ impl App {
     }
 
     fn update_search(&mut self, c: char) {
-        self.search_query.push(c);
-        self.update_nucleo_pattern();
-        self.selected_idx = 0; // Reset selection on search change
+        // Limit search query to 256 characters to prevent DoS
+        if self.search_query.len() < 256 {
+            self.search_query.push(c);
+            self.update_nucleo_pattern();
+            self.selected_idx = 0; // Reset selection on search change
+        }
     }
 
     fn delete_char(&mut self) {
@@ -368,5 +380,54 @@ mod tests {
         let matched = app.collect_matched_items();
 
         assert_eq!(matched.len(), 0);
+    }
+
+    #[test]
+    fn test_handle_action_clear_search_when_empty() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        assert!(!app.should_quit);
+        assert_eq!(app.search_query, "");
+
+        app.handle_action(Action::ClearSearch, 1);
+
+        // Should quit when search is empty
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_handle_action_clear_search_when_active() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+        app.search_query = "test query".to_string();
+
+        assert!(!app.should_quit);
+
+        app.handle_action(Action::ClearSearch, 1);
+
+        // Should clear search but not quit
+        assert!(!app.should_quit);
+        assert_eq!(app.search_query, "");
+        assert_eq!(app.selected_idx, 0);
+    }
+
+    #[test]
+    fn test_search_query_length_limit() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Fill search query to 256 chars
+        for _ in 0..256 {
+            app.update_search('a');
+        }
+
+        assert_eq!(app.search_query.len(), 256);
+
+        // Try to add one more char - should be ignored
+        app.update_search('b');
+
+        assert_eq!(app.search_query.len(), 256);
+        assert!(!app.search_query.contains('b'));
     }
 }

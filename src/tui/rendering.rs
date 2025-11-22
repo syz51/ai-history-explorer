@@ -135,9 +135,11 @@ fn render_status_bar(
     selected_idx: usize,
     search_query: &str,
 ) {
-    let status_text = if search_query.is_empty() {
+    let status_text = if total_entries == 0 {
+        " No entries | Enter: copy | /: filter | Ctrl+C: quit ".to_string()
+    } else if search_query.is_empty() {
         format!(
-            " Showing {} entries | Entry {}/{} | Enter: copy | /: filter | q: quit ",
+            " Showing {} entries | Entry {}/{} | Enter: copy | /: filter | Ctrl+C: quit ",
             total_entries,
             selected_idx + 1,
             total_entries
@@ -309,6 +311,19 @@ mod tests {
             .draw(|f| {
                 let area = f.area();
                 render_preview(f, area, Some(&entry));
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_render_status_bar_empty_entries() {
+        let backend = TestBackend::new(100, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_status_bar(f, area, 0, 0, "");
             })
             .unwrap();
     }
