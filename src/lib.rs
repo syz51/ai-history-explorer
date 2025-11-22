@@ -21,12 +21,14 @@
 //! ```
 
 pub mod cli;
+pub mod clipboard;
 pub mod indexer;
 pub mod models;
 pub mod parsers;
 pub mod utils;
 
 // Re-export commonly used types
+pub use clipboard::copy_to_clipboard;
 pub use indexer::builder::build_index;
 pub use models::search::SearchEntry;
 pub use parsers::history::parse_history_file;

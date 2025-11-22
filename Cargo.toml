@@ -20,6 +20,7 @@ chrono = { version = "0.4", features = ["serde"] }
 percent-encoding = "2.3"
 uuid = "1.11"
 walkdir = "2"
+arboard = "3.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

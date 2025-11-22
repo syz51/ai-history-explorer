@@ -8,3 +8,5 @@
 lcov.info
 *.profraw
 *.profdata
+
+.DS_Store
