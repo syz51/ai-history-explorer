@@ -21,6 +21,10 @@ use arboard::Clipboard;
 /// - macOS: Primary support via pasteboard API
 /// - Linux: X11 (xclip/xsel) or Wayland (wl-clipboard)
 /// - Windows: Not officially supported in Phase 2
+///
+/// # Testing Note
+/// Full coverage requires `ENABLE_CLIPBOARD_TESTS=1` environment variable.
+/// Most tests run in CI by testing validation logic before clipboard access.
 pub fn copy_to_clipboard(text: &str) -> Result<()> {
     // Validate text size to prevent DoS (10MB limit)
     const MAX_CLIPBOARD_SIZE: usize = 10 * 1024 * 1024; // 10MB
@@ -104,6 +108,101 @@ mod tests {
         // Create 11MB of text (exceeds 10MB limit)
         let large_text = "a".repeat(11 * 1024 * 1024);
         let result = copy_to_clipboard(&large_text);
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("too large"));
+    }
+
+    #[test]
+    fn test_copy_exactly_at_limit() {
+        // Create exactly 10MB of text (should pass validation)
+        let text_at_limit = "a".repeat(10 * 1024 * 1024);
+        let result = copy_to_clipboard(&text_at_limit);
+
+        // Should fail only due to clipboard unavailability, not size validation
+        if let Err(e) = result {
+            let err_msg = e.to_string().to_lowercase();
+            assert!(!err_msg.contains("too large"), "10MB exactly should pass validation: {}", e);
+        }
+    }
+
+    #[test]
+    fn test_copy_one_byte_over_limit() {
+        // Create 10MB + 1 byte (should fail validation)
+        let text_over_limit = "a".repeat(10 * 1024 * 1024 + 1);
+        let result = copy_to_clipboard(&text_over_limit);
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("too large"));
+    }
+
+    #[test]
+    fn test_error_message_includes_size_info() {
+        // Test that error messages include helpful size information
+        let large_text = "a".repeat(15 * 1024 * 1024);
+        let result = copy_to_clipboard(&large_text);
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("too large"));
+        assert!(err_msg.contains("bytes"));
+    }
+
+    #[test]
+    fn test_empty_text_error_message() {
+        // Test that empty text has clear error message
+        let result = copy_to_clipboard("");
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("empty"));
+    }
+
+    #[test]
+    fn test_whitespace_only_text() {
+        // Whitespace-only text should be accepted (not considered empty)
+        let text = "   \n\t  ";
+        let result = copy_to_clipboard(text);
+
+        // Should fail only due to clipboard, not validation
+        if let Err(e) = result {
+            let err_msg = e.to_string().to_lowercase();
+            assert!(
+                !err_msg.contains("empty"),
+                "Whitespace should not be rejected as empty: {}",
+                e
+            );
+        }
+    }
+
+    #[test]
+    fn test_single_character() {
+        // Single character should be valid
+        let result = copy_to_clipboard("a");
+
+        // Should fail only due to clipboard, not validation
+        if let Err(e) = result {
+            let err_msg = e.to_string().to_lowercase();
+            assert!(
+                !err_msg.contains("empty") && !err_msg.contains("too large"),
+                "Single character should pass validation: {}",
+                e
+            );
+        }
+    }
+
+    #[test]
+    fn test_multibyte_unicode_size_calculation() {
+        // Test that size is calculated in bytes, not characters
+        // "🚀" is 4 bytes in UTF-8
+        let emoji = "🚀";
+        assert_eq!(emoji.len(), 4); // Verify it's 4 bytes
+
+        // Create text with multibyte characters
+        let text = emoji.repeat(3 * 1024 * 1024); // 12MB in bytes
+        let result = copy_to_clipboard(&text);
 
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
