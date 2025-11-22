@@ -171,3 +171,158 @@ fn render_status_bar(
 
     frame.render_widget(paragraph, area);
 }
+
+#[cfg(test)]
+mod tests {
+    use chrono::{TimeZone, Utc};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use super::*;
+
+    fn create_test_entry(text: &str) -> SearchEntry {
+        SearchEntry {
+            entry_type: EntryType::UserPrompt,
+            display_text: text.to_string(),
+            timestamp: Utc.timestamp_opt(1234567890, 0).unwrap(),
+            project_path: None,
+            session_id: "test-session".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_render_ui_with_entries() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let entries = [create_test_entry("First entry"), create_test_entry("Second entry")];
+        let entry_refs: Vec<&SearchEntry> = entries.iter().collect();
+
+        terminal
+            .draw(|f| {
+                render_ui(f, &entry_refs, 0, "test");
+            })
+            .unwrap();
+
+        // Just verify it doesn't panic
+    }
+
+    #[test]
+    fn test_render_ui_empty_entries() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let entries: Vec<&SearchEntry> = vec![];
+
+        terminal
+            .draw(|f| {
+                render_ui(f, &entries, 0, "");
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_render_preview_with_entry() {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let entry = create_test_entry("Test content");
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_preview(f, area, Some(&entry));
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_render_preview_no_entry() {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_preview(f, area, None);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_render_results_list_with_project_path() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut entry = create_test_entry("Entry with path");
+        entry.project_path = Some(std::path::PathBuf::from("/Users/test/project"));
+
+        let entries = vec![&entry];
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_results_list(f, area, &entries, 0);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_render_results_list_agent_message() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut entry = create_test_entry("Agent response");
+        entry.entry_type = EntryType::AgentMessage;
+
+        let entries = vec![&entry];
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_results_list(f, area, &entries, 0);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_render_status_bar_with_search() {
+        let backend = TestBackend::new(100, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_status_bar(f, area, 10, 5, "search query");
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_render_status_bar_no_search() {
+        let backend = TestBackend::new(100, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_status_bar(f, area, 10, 0, "");
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_render_preview_multiline_content() {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let entry = create_test_entry("Line 1\nLine 2\nLine 3");
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_preview(f, area, Some(&entry));
+            })
+            .unwrap();
+    }
+}

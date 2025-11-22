@@ -102,4 +102,40 @@ mod tests {
         let backspace = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
         assert_eq!(key_to_action(backspace), Action::DeleteChar);
     }
+
+    #[test]
+    fn test_page_navigation() {
+        let page_up = KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE);
+        assert_eq!(key_to_action(page_up), Action::PageUp);
+
+        let page_down = KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE);
+        assert_eq!(key_to_action(page_down), Action::PageDown);
+    }
+
+    #[test]
+    fn test_action_keys() {
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(key_to_action(enter), Action::CopyToClipboard);
+
+        let slash = KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE);
+        assert_eq!(key_to_action(slash), Action::ToggleFilter);
+
+        let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(key_to_action(tab), Action::ToggleFocus);
+
+        let ctrl_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert_eq!(key_to_action(ctrl_r), Action::Refresh);
+    }
+
+    #[test]
+    fn test_search_input_with_shift() {
+        let char_a_shift = KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT);
+        assert_eq!(key_to_action(char_a_shift), Action::UpdateSearch('A'));
+    }
+
+    #[test]
+    fn test_unknown_key() {
+        let unknown = KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE);
+        assert_eq!(key_to_action(unknown), Action::None);
+    }
 }
