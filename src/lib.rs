@@ -25,6 +25,7 @@ pub mod filters;
 pub mod indexer;
 pub mod models;
 pub mod parsers;
+pub mod tui;
 pub mod utils;
 
 // Re-export commonly used types
