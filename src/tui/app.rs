@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use nucleo::{Config, Nucleo};
@@ -23,6 +23,7 @@ pub struct App {
     filtered_entries: Vec<SearchEntry>,
     current_filter: Option<FilterExpr>,
     filter_error: Option<String>,
+    last_enter_time: Option<Instant>,
 }
 
 impl App {
@@ -56,6 +57,7 @@ impl App {
             filtered_entries,
             current_filter: None,
             filter_error: None,
+            last_enter_time: None,
         }
     }
 
@@ -74,7 +76,8 @@ impl App {
                     &matched_items,
                     self.selected_idx,
                     &self.search_query,
-                    self.all_entries.len(),
+                    self.filtered_entries.len(), // filtered_count
+                    self.all_entries.len(),      // total_count
                     self.filter_error.as_deref(),
                 );
             })?;
@@ -112,7 +115,19 @@ impl App {
             Action::PageDown => self.move_selection(10, total_items),
             Action::UpdateSearch(c) => self.update_search(c),
             Action::DeleteChar => self.delete_char(),
-            Action::ApplyFilter => self.apply_filter(),
+            Action::ApplyFilter => {
+                // Debounce: only apply if 150ms has elapsed since last Enter
+                let should_apply = if let Some(last_time) = self.last_enter_time {
+                    last_time.elapsed() >= Duration::from_millis(150)
+                } else {
+                    true // First Enter press
+                };
+
+                if should_apply {
+                    self.apply_filter();
+                    self.last_enter_time = Some(Instant::now());
+                }
+            }
             Action::CopyToClipboard => {
                 // Stub for Worker B (clipboard integration)
                 eprintln!("TODO: Copy to clipboard");
@@ -617,5 +632,233 @@ mod tests {
 
         app.search_query = "no pipe here".to_string();
         assert_eq!(app.extract_filter_portion(), None);
+    }
+
+    #[test]
+    fn test_apply_filter_with_valid_filter() {
+        let mut entries = vec![create_test_entry()];
+        entries[0].entry_type = crate::models::EntryType::UserPrompt;
+        let mut app = App::new(entries.clone());
+
+        // Set up filter query
+        app.search_query = "type:user | test".to_string();
+        app.apply_filter();
+
+        // Should have applied filter successfully
+        assert!(app.filter_error.is_none());
+        assert!(app.current_filter.is_some());
+        assert_eq!(app.filtered_entries.len(), 1);
+    }
+
+    #[test]
+    fn test_apply_filter_with_parse_error() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Invalid filter syntax
+        app.search_query = "invalid::: | test".to_string();
+        app.apply_filter();
+
+        // Should have parse error
+        assert!(app.filter_error.is_some());
+        assert!(app.filter_error.as_ref().unwrap().contains("Parse error"));
+    }
+
+    #[test]
+    fn test_apply_filter_reset_with_no_filter() {
+        let entries = vec![create_test_entry(), create_test_entry()];
+        let mut app = App::new(entries.clone());
+
+        // First apply a filter
+        app.search_query = "type:user | test".to_string();
+        app.apply_filter();
+
+        // Now reset by removing filter portion
+        app.search_query = "test".to_string();
+        app.apply_filter();
+
+        // Should reset to all entries
+        assert!(app.filter_error.is_none());
+        assert!(app.current_filter.is_none());
+        assert_eq!(app.filtered_entries.len(), 2);
+    }
+
+    #[test]
+    fn test_apply_filter_with_empty_filter() {
+        let entries = vec![create_test_entry(), create_test_entry()];
+        let mut app = App::new(entries.clone());
+
+        // Empty filter portion (just pipe)
+        app.search_query = "| fuzzy".to_string();
+        app.apply_filter();
+
+        // Should reset to all entries
+        assert!(app.filter_error.is_none());
+        assert!(app.current_filter.is_none());
+        assert_eq!(app.filtered_entries.len(), 2);
+    }
+
+    #[test]
+    fn test_re_inject_entries_after_filter() {
+        let mut entries = vec![];
+        for i in 0..5 {
+            let mut entry = create_test_entry();
+            entry.display_text = format!("Entry {}", i);
+            entries.push(entry);
+        }
+        let mut app = App::new(entries);
+
+        // Apply a filter
+        app.search_query = "type:user | Entry".to_string();
+        app.apply_filter();
+
+        // Tick nucleo to process
+        app.nucleo.tick(10);
+
+        // Verify entries were re-injected
+        let matched = app.collect_matched_items();
+        assert_eq!(matched.len(), 5);
+    }
+
+    #[test]
+    fn test_handle_action_apply_filter() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        app.search_query = "type:user | test".to_string();
+        app.handle_action(Action::ApplyFilter, 1);
+
+        // Filter should be applied
+        assert!(app.last_enter_time.is_some());
+    }
+
+    #[test]
+    fn test_handle_action_apply_filter_debounce() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        app.search_query = "type:user | test".to_string();
+
+        // First apply
+        app.handle_action(Action::ApplyFilter, 1);
+        assert!(app.last_enter_time.is_some());
+
+        // Immediate second apply (should be debounced)
+        let first_time = app.last_enter_time;
+        app.handle_action(Action::ApplyFilter, 1);
+
+        // Time should not have changed much (debounced)
+        assert_eq!(app.last_enter_time, first_time);
+    }
+
+    // End-to-end TUI filter workflow tests
+    #[test]
+    fn test_tui_filter_workflow_valid_filter() {
+        // Create test data with different entry types
+        let mut entries = vec![create_test_entry(), create_test_entry(), create_test_entry()];
+        entries[0].entry_type = crate::models::EntryType::UserPrompt;
+        entries[0].project_path = Some("/Users/test/project1".into());
+        entries[1].entry_type = crate::models::EntryType::AgentMessage;
+        entries[1].project_path = Some("/Users/test/project1".into());
+        entries[2].entry_type = crate::models::EntryType::UserPrompt;
+        entries[2].project_path = Some("/Users/test/project2".into());
+
+        let mut app = App::new(entries);
+
+        // Simulate user typing a filter query: "type:user | search"
+        for c in "type:user | search".chars() {
+            app.handle_action(Action::UpdateSearch(c), 0);
+        }
+
+        // Apply filter
+        app.handle_action(Action::ApplyFilter, 0);
+
+        // Verify filter was applied (no error)
+        assert!(app.filter_error.is_none());
+        assert!(app.current_filter.is_some());
+
+        // Verify only user entries remain
+        assert_eq!(app.filtered_entries.len(), 2);
+        assert!(
+            app.filtered_entries
+                .iter()
+                .all(|e| matches!(e.entry_type, crate::models::EntryType::UserPrompt))
+        );
+    }
+
+    #[test]
+    fn test_tui_filter_workflow_parse_error() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Type invalid filter
+        for c in "invalid::: | search".chars() {
+            app.handle_action(Action::UpdateSearch(c), 0);
+        }
+
+        // Apply filter
+        app.handle_action(Action::ApplyFilter, 0);
+
+        // Verify parse error was set
+        assert!(app.filter_error.is_some());
+        assert!(app.filter_error.as_ref().unwrap().contains("Parse error"));
+    }
+
+    #[test]
+    fn test_tui_filter_workflow_reset() {
+        let mut entries = vec![create_test_entry(), create_test_entry()];
+        entries[0].entry_type = crate::models::EntryType::UserPrompt;
+        entries[1].entry_type = crate::models::EntryType::AgentMessage;
+
+        let mut app = App::new(entries);
+
+        // Apply filter first
+        app.search_query = "type:user | search".to_string();
+        app.apply_filter();
+
+        // Verify filter is active
+        assert_eq!(app.filtered_entries.len(), 1);
+        assert!(app.current_filter.is_some());
+
+        // Remove filter by updating search query to have no pipe
+        app.search_query = "search".to_string();
+        app.apply_filter();
+
+        // Verify filter was reset
+        assert!(app.current_filter.is_none());
+        assert!(app.filter_error.is_none());
+        assert_eq!(app.filtered_entries.len(), 2); // All entries restored
+    }
+
+    #[test]
+    fn test_tui_filter_workflow_combined_filters() {
+        let mut entries = vec![create_test_entry(), create_test_entry(), create_test_entry()];
+        entries[0].entry_type = crate::models::EntryType::UserPrompt;
+        entries[0].project_path = Some("/Users/test/project1".into());
+        entries[1].entry_type = crate::models::EntryType::AgentMessage;
+        entries[1].project_path = Some("/Users/test/project1".into());
+        entries[2].entry_type = crate::models::EntryType::UserPrompt;
+        entries[2].project_path = Some("/Users/test/project2".into());
+
+        let mut app = App::new(entries);
+
+        // Apply combined filter
+        for c in "project:project1 type:user | fuzzy".chars() {
+            app.handle_action(Action::UpdateSearch(c), 0);
+        }
+        app.handle_action(Action::ApplyFilter, 0);
+
+        // Verify combined filter was applied
+        assert!(app.filter_error.is_none());
+        assert_eq!(app.filtered_entries.len(), 1);
+        assert!(
+            app.filtered_entries[0]
+                .project_path
+                .as_ref()
+                .unwrap()
+                .to_string_lossy()
+                .contains("project1")
+        );
+        assert!(matches!(app.filtered_entries[0].entry_type, crate::models::EntryType::UserPrompt));
     }
 }

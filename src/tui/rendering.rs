@@ -9,12 +9,20 @@ use super::timestamps::format_timestamp;
 use crate::models::{EntryType, SearchEntry};
 use crate::utils::format_path_with_tilde;
 
+/// Status bar entry counts
+struct StatusCounts {
+    matched: usize,
+    filtered: usize,
+    total: usize,
+}
+
 /// Render the entire UI
 pub fn render_ui(
     frame: &mut Frame,
     entries: &[&SearchEntry],
     selected_idx: usize,
     search_query: &str,
+    filtered_count: usize,
     total_entries: usize,
     filter_error: Option<&str>,
 ) {
@@ -25,8 +33,7 @@ pub fn render_ui(
     render_status_bar(
         frame,
         layout.status_area,
-        entries.len(),
-        total_entries,
+        StatusCounts { matched: entries.len(), filtered: filtered_count, total: total_entries },
         selected_idx,
         search_query,
         filter_error,
@@ -141,8 +148,7 @@ fn render_preview(frame: &mut Frame, area: Rect, entry: Option<&SearchEntry>) {
 fn render_status_bar(
     frame: &mut Frame,
     area: Rect,
-    filtered_count: usize,
-    total_count: usize,
+    counts: StatusCounts,
     selected_idx: usize,
     search_query: &str,
     filter_error: Option<&str>,
@@ -162,7 +168,7 @@ fn render_status_bar(
             format!(" [ERROR] {} ", error),
             Style::default().fg(Color::Rgb(239, 68, 68)).bg(Color::Rgb(24, 24, 27)), // Red
         )
-    } else if filtered_count == 0 {
+    } else if counts.matched == 0 {
         (
             " No entries | Enter: apply filter | Esc: clear | Ctrl+C: quit ".to_string(),
             Style::default().fg(Color::Rgb(250, 250, 250)).bg(Color::Rgb(24, 24, 27)),
@@ -173,14 +179,12 @@ fn render_status_bar(
         // Mode indicator
         parts.push("[FUZZY]".to_string());
 
-        // Match counts
-        if filtered_count < total_count {
-            parts.push(format!(
-                "{}/{} filtered ({} total)",
-                filtered_count, filtered_count, total_count
-            ));
+        // Match counts: matched/filtered (total)
+        if counts.filtered < counts.total {
+            parts.push(format!("{}/{} ({} total)", counts.matched, counts.filtered, counts.total));
         } else {
-            parts.push(format!("{} entries", total_count));
+            // No filter active, just show matched/total
+            parts.push(format!("{}/{} total", counts.matched, counts.total));
         }
 
         // Active filter
@@ -189,8 +193,8 @@ fn render_status_bar(
         }
 
         // Current selection
-        if filtered_count > 0 {
-            parts.push(format!("entry {}/{}", selected_idx + 1, filtered_count));
+        if counts.matched > 0 {
+            parts.push(format!("entry {}/{}", selected_idx + 1, counts.matched));
         }
 
         // Keybindings
@@ -239,7 +243,7 @@ mod tests {
 
         terminal
             .draw(|f| {
-                render_ui(f, &entry_refs, 0, "test", 2, None);
+                render_ui(f, &entry_refs, 0, "test", 2, 2, None);
             })
             .unwrap();
 
@@ -255,7 +259,7 @@ mod tests {
 
         terminal
             .draw(|f| {
-                render_ui(f, &entries, 0, "", 0, None);
+                render_ui(f, &entries, 0, "", 0, 0, None);
             })
             .unwrap();
     }
@@ -332,7 +336,14 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                render_status_bar(f, area, 10, 10, 5, "search query", None);
+                render_status_bar(
+                    f,
+                    area,
+                    StatusCounts { matched: 10, filtered: 10, total: 10 },
+                    5,
+                    "search query",
+                    None,
+                );
             })
             .unwrap();
     }
@@ -345,7 +356,14 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                render_status_bar(f, area, 10, 10, 0, "", None);
+                render_status_bar(
+                    f,
+                    area,
+                    StatusCounts { matched: 10, filtered: 10, total: 10 },
+                    0,
+                    "",
+                    None,
+                );
             })
             .unwrap();
     }
@@ -373,7 +391,111 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                render_status_bar(f, area, 0, 0, 0, "", None);
+                render_status_bar(
+                    f,
+                    area,
+                    StatusCounts { matched: 0, filtered: 0, total: 0 },
+                    0,
+                    "",
+                    None,
+                );
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_render_status_bar_with_filter_error() {
+        let backend = TestBackend::new(100, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_status_bar(
+                    f,
+                    area,
+                    StatusCounts { matched: 10, filtered: 10, total: 10 },
+                    0,
+                    "test query",
+                    Some("Parse error: invalid filter"),
+                );
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_render_status_bar_with_filter_portion() {
+        let backend = TestBackend::new(100, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_status_bar(
+                    f,
+                    area,
+                    StatusCounts { matched: 5, filtered: 8, total: 10 },
+                    0,
+                    "type:user | search",
+                    None,
+                );
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_render_status_bar_with_filtered_count() {
+        let backend = TestBackend::new(100, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                // matched_count=5, filtered_count=8, total_count=10
+                render_status_bar(
+                    f,
+                    area,
+                    StatusCounts { matched: 5, filtered: 8, total: 10 },
+                    0,
+                    "search",
+                    None,
+                );
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_render_ui_with_filter_error() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let entries = [create_test_entry("First entry")];
+        let entry_refs: Vec<&SearchEntry> = entries.iter().collect();
+
+        terminal
+            .draw(|f| {
+                render_ui(f, &entry_refs, 0, "invalid::: | test", 1, 1, Some("Filter parse error"));
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_render_status_bar_with_empty_fuzzy_part() {
+        let backend = TestBackend::new(100, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                // Empty fuzzy part should not show "Esc: clear"
+                render_status_bar(
+                    f,
+                    area,
+                    StatusCounts { matched: 5, filtered: 5, total: 10 },
+                    0,
+                    "type:user |",
+                    None,
+                );
             })
             .unwrap();
     }
