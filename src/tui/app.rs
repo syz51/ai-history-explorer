@@ -7,11 +7,27 @@ use ratatui::Terminal;
 use ratatui::backend::Backend;
 
 use super::events::{Action, poll_event};
-use super::rendering::render_ui;
+use super::rendering::{RenderState, render_ui};
+use crate::clipboard::copy_to_clipboard;
 use crate::filters::apply::apply_filters;
 use crate::filters::ast::FilterExpr;
 use crate::filters::parser::parse_filter;
 use crate::models::SearchEntry;
+
+/// Type of status message
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageType {
+    Success,
+    Error,
+}
+
+/// Transient status message with expiry
+#[derive(Debug, Clone)]
+pub struct StatusMessage {
+    pub text: String,
+    pub message_type: MessageType,
+    pub expires_at: Instant,
+}
 
 pub struct App {
     nucleo: Nucleo<SearchEntry>,
@@ -24,6 +40,8 @@ pub struct App {
     current_filter: Option<FilterExpr>,
     filter_error: Option<String>,
     last_enter_time: Option<Instant>,
+    // Status message (clipboard feedback, etc.)
+    status_message: Option<StatusMessage>,
 }
 
 impl App {
@@ -58,7 +76,17 @@ impl App {
             current_filter: None,
             filter_error: None,
             last_enter_time: None,
+            status_message: None,
         }
+    }
+
+    /// Set a transient status message with automatic expiry
+    fn set_status(&mut self, text: impl Into<String>, message_type: MessageType, duration_ms: u64) {
+        self.status_message = Some(StatusMessage {
+            text: text.into(),
+            message_type,
+            expires_at: Instant::now() + Duration::from_millis(duration_ms),
+        });
     }
 
     pub fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
@@ -66,25 +94,35 @@ impl App {
             // Tick nucleo to process matches
             self.nucleo.tick(10);
 
+            // Clear expired status messages (before borrowing self)
+            let should_clear = self
+                .status_message
+                .as_ref()
+                .map(|msg| Instant::now() >= msg.expires_at)
+                .unwrap_or(false);
+            if should_clear {
+                self.status_message = None;
+            }
+
             // Get latest match results from nucleo
             let matched_items = self.collect_matched_items();
+            let matched_count = matched_items.len();
 
             // Render UI
             terminal.draw(|f| {
-                render_ui(
-                    f,
-                    &matched_items,
-                    self.selected_idx,
-                    &self.search_query,
-                    self.filtered_entries.len(), // filtered_count
-                    self.all_entries.len(),      // total_count
-                    self.filter_error.as_deref(),
-                );
+                let state = RenderState {
+                    search_query: &self.search_query,
+                    filtered_count: self.filtered_entries.len(),
+                    total_count: self.all_entries.len(),
+                    filter_error: self.filter_error.as_deref(),
+                    status_message: self.status_message.as_ref(),
+                };
+                render_ui(f, &matched_items, self.selected_idx, &state);
             })?;
 
             // Handle events
             let action = poll_event(Duration::from_millis(100))?;
-            self.handle_action(action, matched_items.len());
+            self.handle_action(action, matched_count);
         }
 
         Ok(())
@@ -129,8 +167,29 @@ impl App {
                 }
             }
             Action::CopyToClipboard => {
-                // Stub for Worker B (clipboard integration)
-                eprintln!("TODO: Copy to clipboard");
+                // Get currently matched items (fuzzy-filtered)
+                let matched_items = self.collect_matched_items();
+
+                if matched_items.is_empty() {
+                    self.set_status("✗ No entries to copy", MessageType::Error, 3000);
+                } else if self.selected_idx >= matched_items.len() {
+                    self.set_status("✗ Invalid selection", MessageType::Error, 3000);
+                } else {
+                    // Copy selected entry's display text
+                    let entry = matched_items[self.selected_idx];
+                    match copy_to_clipboard(&entry.display_text) {
+                        Ok(()) => {
+                            self.set_status("✓ Copied to clipboard", MessageType::Success, 3000);
+                        }
+                        Err(e) => {
+                            self.set_status(
+                                format!("✗ Clipboard error: {}", e),
+                                MessageType::Error,
+                                5000,
+                            );
+                        }
+                    }
+                }
             }
             Action::ToggleFilter => {
                 // Stub for Worker C (filters)

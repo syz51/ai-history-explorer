@@ -12,7 +12,6 @@ pub enum Action {
     PageUp,
     PageDown,
     ApplyFilter,
-    #[allow(dead_code)] // Clipboard integration deferred to future phase
     CopyToClipboard,
     ToggleFilter,
     ToggleFocus,
@@ -48,6 +47,7 @@ fn key_to_action(key: KeyEvent) -> Action {
 
         // Actions
         (KeyCode::Enter, _) => Action::ApplyFilter,
+        (KeyCode::Char('y'), KeyModifiers::CONTROL) => Action::CopyToClipboard,
         (KeyCode::Char('/'), KeyModifiers::NONE) => Action::ToggleFilter,
         (KeyCode::Tab, _) => Action::ToggleFocus,
         (KeyCode::Char('r'), KeyModifiers::CONTROL) => Action::Refresh,
@@ -121,6 +121,9 @@ mod tests {
     fn test_action_keys() {
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(key_to_action(enter), Action::ApplyFilter);
+
+        let ctrl_y = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL);
+        assert_eq!(key_to_action(ctrl_y), Action::CopyToClipboard);
 
         let slash = KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE);
         assert_eq!(key_to_action(slash), Action::ToggleFilter);

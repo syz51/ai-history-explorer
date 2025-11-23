@@ -12,6 +12,7 @@ Integration of Work Stream 1 (TUI Core) and Work Stream 3 (Field Filters) for Ph
 **Pattern:** Single input field with pipe `|` separator (inspired by fzf/telescope.nvim)
 
 **Input format:**
+
 ```
 project:ai-history type:user | fuzzy search terms
 ^^^^^^^^^^^^^^^^^^^^^^^^^      ^^^^^^^^^^^^^^^^^^^
@@ -19,6 +20,7 @@ project:ai-history type:user | fuzzy search terms
 ```
 
 **Behavior:**
+
 - Left of `|`: Structured filters (`project:name`, `type:user|agent`, `since:YYYY-MM-DD`)
 - Right of `|`: Fuzzy search on filtered results
 - No `|` present: Treat entire input as fuzzy search (backward compatible)
@@ -64,6 +66,7 @@ let fuzzy_part = parts.get(1).map(|s| s.trim()).unwrap_or(input);
 ```
 
 **Examples:**
+
 - `"project:foo | search"` → filter=`"project:foo"`, fuzzy=`"search"`
 - `"project:foo"` → filter=`None`, fuzzy=`"project:foo"`
 - `"| search"` → filter=`""` (empty), fuzzy=`"search"`
@@ -73,6 +76,7 @@ let fuzzy_part = parts.get(1).map(|s| s.trim()).unwrap_or(input);
 **Trigger:** Enter key pressed (150ms debounce)
 
 **Rationale:**
+
 - Allows composing complex filters without intermediate parse errors
 - Debounce prevents duplicate processing on rapid Enter presses
 - Research shows 100-200ms debounce is standard for TUI tools
@@ -96,6 +100,7 @@ pub struct App {
 ```
 
 **Initialization:**
+
 - `all_entries`: Passed from `run_interactive(entries)`
 - `filtered_entries`: Initially clone of `all_entries`
 - `current_filter`: None
@@ -144,6 +149,7 @@ pub struct App {
 ```
 
 **Error display** (red text):
+
 - Show parse error message
 - Suggest valid syntax: `Try: project:name type:user | search`
 - Keep results from last valid filter (don't clear on error)
@@ -151,15 +157,18 @@ pub struct App {
 ### Keybindings Changes
 
 **Modified:**
+
 - **Esc:** Clear filter portion (remove left of `|`) - NO LONGER EXITS
 - **Ctrl+C:** Quit program (new primary exit)
 
 **Unchanged:**
+
 - Enter: Apply filters (now with debounce)
 - Ctrl+p/n, ↑/↓: Navigate results
 - Tab: Toggle preview focus
 
 **Rationale for Esc change:**
+
 - Consistent with vim/shell behavior (Esc = cancel/clear)
 - Prevents accidental exits while exploring filters
 - Ctrl+C is standard terminal quit signal
@@ -169,21 +178,25 @@ pub struct App {
 ### Modified Files
 
 1. **`src/lib.rs`**
+
    - Add `pub mod filters;`
 
 2. **`src/tui/app.rs`**
+
    - Extend `App` struct with filter state
    - Add input parsing logic (split on `|`)
    - Implement filter application in event handler
    - Add 150ms debounce for Enter key
 
 3. **`src/tui/rendering.rs`**
+
    - Update status bar to show:
      - Match counts: `{matched}/{filtered} ({total})`
      - Active filters: parsed filter display
      - Errors: parse errors with help text
 
 4. **`src/tui/events.rs`**
+
    - Change Esc: clear filter instead of quit
    - Add Ctrl+C: quit program
 
@@ -193,18 +206,23 @@ pub struct App {
 ### New Files
 
 1. **`src/filters/mod.rs`** (from search-implementation)
+
    - Public exports for filter module
 
 2. **`src/filters/ast.rs`** (from search-implementation)
+
    - FilterField, FilterOperator, FieldFilter, FilterExpr
 
 3. **`src/filters/parser.rs`** (from search-implementation)
+
    - Tokenizer and parser for filter syntax
 
 4. **`src/filters/apply.rs`** (from search-implementation)
+
    - `apply_filters(entries, filter) -> Result<Vec<SearchEntry>>`
 
 5. **`tests/filter_integration_test.rs`** (new)
+
    - Integration tests for filter + TUI
 
 6. **`docs/filter-integration-plan.md`** (this file)
@@ -224,21 +242,26 @@ pub struct App {
 **`tests/filter_integration_test.rs`:**
 
 1. **Parse filter from input:**
+
    - Input: `"project:foo | search"`
    - Verify: filter parsed, fuzzy applied
 
 2. **Apply filter reduces results:**
+
    - Input: `"type:user |"`
    - Verify: only user entries in filtered set
 
 3. **Invalid filter shows error:**
+
    - Input: `"invalid:field |"`
    - Verify: error stored, help text shown
 
 4. **Clear filter restores dataset:**
+
    - Sequence: apply filter → Esc → verify full dataset
 
 5. **No pipe separator (backward compat):**
+
    - Input: `"search terms"`
    - Verify: no filter applied, fuzzy only
 
@@ -249,6 +272,7 @@ pub struct App {
 ### Manual Testing
 
 **Test with real data:**
+
 1. Run `cargo run -- interactive` with ~/.claude data
 2. Test filters: `project:ai-history |`
 3. Test fuzzy: `| tui implementation`
@@ -258,6 +282,7 @@ pub struct App {
 7. Test quit: press Ctrl+C
 
 **Performance check:**
+
 - Load time with 10k+ entries
 - Filter application latency
 - Fuzzy search responsiveness
@@ -267,22 +292,26 @@ pub struct App {
 ### Phase 3+ Enhancements
 
 1. **Filter Caching**
+
    - Cache parsed `FilterExpr` to avoid re-parsing identical filters
    - Use hash of filter string as cache key
    - Invalidate on filter change
 
 2. **Real-time Filter Application**
+
    - Apply filters on keystroke (with debounce)
    - Requires more aggressive error handling (don't show error mid-typing)
    - Use 150-200ms debounce for parse + apply
 
 3. **Advanced Filter Syntax**
+
    - Parentheses: `project:foo AND (type:user OR type:agent)`
    - Negation: `NOT project:foo`
    - Regex: `project:/ai-.*-explorer/`
    - Date ranges: `since:2024-01-01 until:2024-12-31`
 
 4. **Performance Optimizations**
+
    - Parallel filter application (rayon) for large datasets
    - Streaming filter results to nucleo
    - Pre-filter index at startup (common filters)
@@ -298,23 +327,27 @@ pub struct App {
 ### Why Single Input with `|` Separator?
 
 **Research findings:**
+
 - fzf, skim, telescope.nvim all use single input field
 - Pipe `|` separator is intuitive (shell pipeline mental model)
 - Avoids field-switching complexity (Tab navigation)
 - Fast power-user workflow (no mode switching)
 
 **Alternative considered:** Separate filter and fuzzy inputs
+
 - Rejected: Requires field focus management, more complex UI
 - Less efficient for rapid iteration
 
 ### Why Enter to Apply (Not Real-time)?
 
 **Pros:**
+
 - Allows composing complex filters without errors
 - User controls when filter is applied
 - Reduces parse overhead (once per Enter vs every keystroke)
 
 **Cons:**
+
 - Less responsive than real-time (but debounce helps)
 
 **Decision:** Start with Enter, add real-time in Phase 3 if requested
@@ -322,16 +355,19 @@ pub struct App {
 ### Why Change Esc Behavior?
 
 **Rationale:**
+
 - Vim/Emacs users expect Esc = clear/cancel, not quit
 - Prevents accidental exits during exploration
 - Ctrl+C is universal terminal quit
 
 **Alternative:** Keep Esc as quit, use Ctrl+X for clear
+
 - Rejected: Less discoverable, breaks muscle memory
 
 ## Success Metrics
 
 **Functional:**
+
 - ✅ Filter syntax parses correctly
 - ✅ Filters apply before fuzzy matching
 - ✅ Status bar shows filter state and errors
@@ -339,16 +375,19 @@ pub struct App {
 - ✅ Backward compatible (no `|` = fuzzy only)
 
 **Quality:**
+
 - ✅ All tests pass (cargo test)
 - ✅ Coverage ≥90% (cargo llvm-cov)
 - ✅ Zero clippy warnings
 
 **Performance:**
+
 - ✅ Filter application <100ms (10k entries)
 - ✅ Fuzzy search latency <50ms
 - ✅ No memory leaks
 
 **UX:**
+
 - ✅ Helpful error messages with syntax examples
 - ✅ Intuitive keybindings (Esc = clear, Ctrl+C = quit)
 - ✅ Clear visual feedback (status bar)
@@ -365,6 +404,7 @@ pub struct App {
 **Still open:**
 
 1. Should `|` character be escaped if user wants literal pipe in fuzzy search?
+
    - **Current:** No escaping (rare edge case)
    - **Future:** Add `\|` escape sequence if requested
 

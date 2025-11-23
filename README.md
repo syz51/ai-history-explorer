@@ -99,6 +99,7 @@ since:2024-01-01 | recent changes
 
 **Actions:**
 - `Enter` - Apply filters
+- `Ctrl+Y` - Copy selected entry to clipboard
 - `Esc` - Clear input (or quit if empty)
 - `Ctrl+C` - Quit
 
