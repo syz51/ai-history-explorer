@@ -11,7 +11,8 @@ fn generate_history_file(num_entries: usize) -> NamedTempFile {
 
     for i in 0..num_entries {
         let entry = format!(
-            r#"{{"timestamp":"2024-01-{:02}T12:00:00Z","session_id":"session-{}","messages":[{{"type":"user","text":"Test prompt {}"}}]}}"#,
+            r#"{{"display":"Test prompt {}","timestamp":"2024-01-{:02}T12:00:00Z","sessionId":"550e8400-e29b-41d4-a716-{:012x}","messages":[{{"type":"user","text":"Test prompt {}"}}]}}"#,
+            i,
             (i % 28) + 1,
             i,
             i
