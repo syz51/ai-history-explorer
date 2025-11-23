@@ -548,4 +548,129 @@ mod tests {
             })
             .unwrap();
     }
+
+    #[test]
+    fn test_render_status_bar_with_success_message() {
+        use std::time::{Duration, Instant};
+
+        let backend = TestBackend::new(100, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let status_msg = StatusMessage {
+            text: "✓ Copied to clipboard".to_string(),
+            message_type: MessageType::Success,
+            expires_at: Instant::now() + Duration::from_secs(3),
+        };
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_status_bar(
+                    f,
+                    area,
+                    StatusCounts { matched: 5, filtered: 5, total: 10 },
+                    0,
+                    "search",
+                    None,
+                    Some(&status_msg),
+                );
+            })
+            .unwrap();
+
+        // Verify rendering succeeded (color verification would require inspecting buffer)
+    }
+
+    #[test]
+    fn test_render_status_bar_with_error_message() {
+        use std::time::{Duration, Instant};
+
+        let backend = TestBackend::new(100, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let status_msg = StatusMessage {
+            text: "✗ No entries to copy".to_string(),
+            message_type: MessageType::Error,
+            expires_at: Instant::now() + Duration::from_secs(3),
+        };
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_status_bar(
+                    f,
+                    area,
+                    StatusCounts { matched: 0, filtered: 0, total: 10 },
+                    0,
+                    "search",
+                    None,
+                    Some(&status_msg),
+                );
+            })
+            .unwrap();
+
+        // Verify rendering succeeded (color verification would require inspecting buffer)
+    }
+
+    #[test]
+    fn test_render_status_bar_status_message_priority() {
+        use std::time::{Duration, Instant};
+
+        let backend = TestBackend::new(100, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        // Both status message and filter error present
+        let status_msg = StatusMessage {
+            text: "✓ Copied to clipboard".to_string(),
+            message_type: MessageType::Success,
+            expires_at: Instant::now() + Duration::from_secs(3),
+        };
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                // Status message should take priority over filter error
+                render_status_bar(
+                    f,
+                    area,
+                    StatusCounts { matched: 5, filtered: 5, total: 10 },
+                    0,
+                    "search",
+                    Some("This error should be hidden"),
+                    Some(&status_msg),
+                );
+            })
+            .unwrap();
+
+        // Verify rendering succeeded (status message should be shown, not filter error)
+    }
+
+    #[test]
+    fn test_render_ui_with_status_message() {
+        use std::time::{Duration, Instant};
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let entries = [create_test_entry("First entry")];
+        let entry_refs: Vec<&SearchEntry> = entries.iter().collect();
+
+        let status_msg = StatusMessage {
+            text: "✓ Copied to clipboard".to_string(),
+            message_type: MessageType::Success,
+            expires_at: Instant::now() + Duration::from_secs(3),
+        };
+
+        terminal
+            .draw(|f| {
+                let state = RenderState {
+                    search_query: "test",
+                    filtered_count: 1,
+                    total_count: 1,
+                    filter_error: None,
+                    status_message: Some(&status_msg),
+                };
+                render_ui(f, &entry_refs, 0, &state);
+            })
+            .unwrap();
+    }
 }

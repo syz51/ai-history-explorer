@@ -512,12 +512,113 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_action_copy_to_clipboard() {
+    fn test_handle_action_copy_to_clipboard_empty_entries() {
+        let mut app = App::new(vec![]);
+        app.nucleo.tick(10);
+
+        app.handle_action(Action::CopyToClipboard, 0);
+
+        // Should set error status message
+        assert!(app.status_message.is_some());
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.text, "✗ No entries to copy");
+        assert_eq!(msg.message_type, MessageType::Error);
+    }
+
+    #[test]
+    fn test_handle_action_copy_to_clipboard_invalid_selection() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+        app.nucleo.tick(10);
+
+        // Set selection out of bounds
+        app.selected_idx = 999;
+
+        app.handle_action(Action::CopyToClipboard, 1);
+
+        // Should set error status message
+        assert!(app.status_message.is_some());
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.text, "✗ Invalid selection");
+        assert_eq!(msg.message_type, MessageType::Error);
+    }
+
+    #[test]
+    fn test_handle_action_copy_to_clipboard_success() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+        app.nucleo.tick(10);
+
+        app.handle_action(Action::CopyToClipboard, 1);
+
+        // Should set success status message (or error if clipboard unavailable)
+        assert!(app.status_message.is_some());
+        let msg = app.status_message.as_ref().unwrap();
+
+        // Message could be success or clipboard error depending on environment
+        if msg.message_type == MessageType::Success {
+            assert_eq!(msg.text, "✓ Copied to clipboard");
+        } else {
+            // Clipboard might not be available in test environment
+            assert!(msg.text.starts_with("✗ Clipboard error:"));
+            assert_eq!(msg.message_type, MessageType::Error);
+        }
+    }
+
+    #[test]
+    fn test_set_status_success_message() {
         let entries = vec![create_test_entry()];
         let mut app = App::new(entries);
 
-        // Just verify it doesn't panic (stub for Worker B)
-        app.handle_action(Action::CopyToClipboard, 1);
+        app.set_status("Test success", MessageType::Success, 3000);
+
+        assert!(app.status_message.is_some());
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.text, "Test success");
+        assert_eq!(msg.message_type, MessageType::Success);
+        assert!(msg.expires_at > Instant::now());
+    }
+
+    #[test]
+    fn test_set_status_error_message() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        app.set_status("Test error", MessageType::Error, 5000);
+
+        assert!(app.status_message.is_some());
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.text, "Test error");
+        assert_eq!(msg.message_type, MessageType::Error);
+        assert!(msg.expires_at > Instant::now());
+    }
+
+    #[test]
+    fn test_status_message_expiry() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Set status with 0ms duration (already expired)
+        app.set_status("Expired", MessageType::Success, 0);
+        assert!(app.status_message.is_some());
+
+        // Sleep briefly to ensure expiry time has passed
+        std::thread::sleep(Duration::from_millis(1));
+
+        // Simulate the expiry check from run loop
+        let should_clear = app
+            .status_message
+            .as_ref()
+            .map(|msg| Instant::now() >= msg.expires_at)
+            .unwrap_or(false);
+
+        assert!(should_clear);
+
+        if should_clear {
+            app.status_message = None;
+        }
+
+        assert!(app.status_message.is_none());
     }
 
     #[test]
