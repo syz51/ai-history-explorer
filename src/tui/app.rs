@@ -14,6 +14,11 @@ use crate::filters::ast::FilterExpr;
 use crate::filters::parser::parse_filter;
 use crate::models::SearchEntry;
 
+/// Duration for success status messages (milliseconds)
+const STATUS_SUCCESS_DURATION_MS: u64 = 3000;
+/// Duration for error status messages (milliseconds)
+const STATUS_ERROR_DURATION_MS: u64 = 5000;
+
 /// Type of status message
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageType {
@@ -182,21 +187,33 @@ impl App {
                 let matched_items = self.collect_matched_items();
 
                 if matched_items.is_empty() {
-                    self.set_status("✗ No entries to copy", MessageType::Error, 3000);
+                    self.set_status(
+                        "✗ No entries to copy",
+                        MessageType::Error,
+                        STATUS_ERROR_DURATION_MS,
+                    );
                 } else if self.selected_idx >= matched_items.len() {
-                    self.set_status("✗ Invalid selection", MessageType::Error, 3000);
+                    self.set_status(
+                        "✗ Invalid selection",
+                        MessageType::Error,
+                        STATUS_ERROR_DURATION_MS,
+                    );
                 } else {
                     // Copy selected entry's display text
                     let entry = matched_items[self.selected_idx];
                     match copy_to_clipboard(&entry.display_text) {
                         Ok(()) => {
-                            self.set_status("✓ Copied to clipboard", MessageType::Success, 3000);
+                            self.set_status(
+                                "✓ Copied to clipboard",
+                                MessageType::Success,
+                                STATUS_SUCCESS_DURATION_MS,
+                            );
                         }
                         Err(e) => {
                             self.set_status(
                                 format!("✗ Clipboard error: {}", e),
                                 MessageType::Error,
-                                5000,
+                                STATUS_ERROR_DURATION_MS,
                             );
                         }
                     }
