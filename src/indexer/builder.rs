@@ -1063,4 +1063,66 @@ mod tests {
         // Result should be valid UTF-8
         assert!(std::str::from_utf8(result.as_bytes()).is_ok());
     }
+
+    #[test]
+    fn test_build_index_strips_ansi_codes_from_history() {
+        let claude_dir = create_test_claude_dir();
+
+        // Create history with ANSI color codes
+        let history_content = r#"{"display":"Plain text","timestamp":1234567890,"sessionId":"550e8400-e29b-41d4-a716-446655440000"}
+{"display":"\u001b[31mRed text\u001b[0m with \u001b[1mbold\u001b[0m","timestamp":1234567891,"sessionId":"550e8400-e29b-41d4-a716-446655440001"}
+{"display":"Text with \u001b[32;1mgreen bold\u001b[0m and \u001b[4munderline\u001b[0m","timestamp":1234567892,"sessionId":"550e8400-e29b-41d4-a716-446655440002"}"#;
+        write_history_file(claude_dir.path(), history_content);
+
+        let result = build_index(claude_dir.path());
+        assert!(result.is_ok());
+        let index = result.unwrap();
+
+        assert_eq!(index.len(), 3);
+        // Verify ANSI codes are stripped from display text
+        assert_eq!(index[0].display_text, "Text with green bold and underline");
+        assert_eq!(index[1].display_text, "Red text with bold");
+        assert_eq!(index[2].display_text, "Plain text");
+
+        // Verify no escape sequences remain
+        for entry in &index {
+            assert!(
+                !entry.display_text.contains('\u{001b}'),
+                "Display text should not contain escape sequences: {}",
+                entry.display_text
+            );
+        }
+    }
+
+    #[test]
+    fn test_build_index_strips_ansi_codes_from_agent_messages() {
+        let claude_dir = create_test_claude_dir();
+
+        // Create agent file with ANSI codes in text content
+        let agent_content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"User prompt with \u001b[33mYELLOW\u001b[0m text"}]},"timestamp":1234567890,"sessionId":"550e8400-e29b-41d4-a716-446655440000","uuid":"uuid1"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Response with \u001b[36mCYAN\u001b[0m and \u001b[7mreverse video\u001b[0m"}]},"timestamp":1234567891,"sessionId":"550e8400-e29b-41d4-a716-446655440000","uuid":"uuid2"}"#;
+        create_project(
+            claude_dir.path(),
+            "-Users%2Ftest%2Fproject",
+            &[("agent-123.jsonl", agent_content)],
+        );
+
+        let result = build_index(claude_dir.path());
+        assert!(result.is_ok());
+        let index = result.unwrap();
+
+        assert_eq!(index.len(), 2);
+        // Verify ANSI codes are stripped from text content blocks
+        assert_eq!(index[0].display_text, "Response with CYAN and reverse video");
+        assert_eq!(index[1].display_text, "User prompt with YELLOW text");
+
+        // Verify no escape sequences remain
+        for entry in &index {
+            assert!(
+                !entry.display_text.contains('\u{001b}'),
+                "Display text should not contain escape sequences: {}",
+                entry.display_text
+            );
+        }
+    }
 }

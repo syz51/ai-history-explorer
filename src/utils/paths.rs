@@ -993,4 +993,81 @@ mod tests {
         let result = safe_open_file(&file);
         assert!(result.is_ok(), "safe_open_file should succeed on regular file");
     }
+
+    #[test]
+    fn test_safe_open_dir_success() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path().join("subdir");
+        std::fs::create_dir(&dir).unwrap();
+
+        let result = safe_open_dir(&dir);
+        assert!(result.is_ok(), "safe_open_dir should succeed on valid directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_safe_open_dir_rejects_symlink() {
+        use std::os::unix::fs::symlink;
+
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let target_dir = temp_dir.path().join("target");
+        std::fs::create_dir(&target_dir).unwrap();
+
+        let link = temp_dir.path().join("link");
+        symlink(&target_dir, &link).unwrap();
+
+        let result = safe_open_dir(&link);
+        assert!(result.is_err(), "safe_open_dir should reject symlinks on Unix");
+        assert!(
+            result.unwrap_err().to_string().contains("Failed to open directory"),
+            "Error message should mention directory open failure"
+        );
+    }
+
+    #[test]
+    fn test_safe_open_dir_nonexistent() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let nonexistent = temp_dir.path().join("nonexistent");
+
+        let result = safe_open_dir(&nonexistent);
+        assert!(result.is_err(), "safe_open_dir should fail on nonexistent path");
+    }
+
+    #[test]
+    fn test_safe_open_dir_on_file() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("file.txt");
+        std::fs::write(&file, b"test content").unwrap();
+
+        let result = safe_open_dir(&file);
+        assert!(result.is_err(), "safe_open_dir should fail on regular file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_safe_open_dir_with_null_byte() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        use std::path::PathBuf;
+
+        // Create path with null byte (only possible on Unix)
+        let path_bytes = b"/tmp/test\0bad";
+        let os_str = OsStr::from_bytes(path_bytes);
+        let path = PathBuf::from(os_str);
+
+        let result = safe_open_dir(&path);
+        assert!(result.is_err(), "safe_open_dir should reject path with null byte");
+        assert!(
+            result.unwrap_err().to_string().contains("null byte"),
+            "Error message should mention null byte"
+        );
+    }
 }
