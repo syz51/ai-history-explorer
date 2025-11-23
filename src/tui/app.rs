@@ -7,11 +7,32 @@ use ratatui::Terminal;
 use ratatui::backend::Backend;
 
 use super::events::{Action, poll_event};
-use super::rendering::render_ui;
+use super::rendering::{RenderState, render_ui};
+use crate::clipboard::copy_to_clipboard;
 use crate::filters::apply::apply_filters;
 use crate::filters::ast::FilterExpr;
 use crate::filters::parser::parse_filter;
 use crate::models::SearchEntry;
+
+/// Duration for success status messages (milliseconds)
+const STATUS_SUCCESS_DURATION_MS: u64 = 3000;
+/// Duration for error status messages (milliseconds)
+const STATUS_ERROR_DURATION_MS: u64 = 5000;
+
+/// Type of status message
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageType {
+    Success,
+    Error,
+}
+
+/// Transient status message with expiry
+#[derive(Debug, Clone)]
+pub struct StatusMessage {
+    pub text: String,
+    pub message_type: MessageType,
+    pub expires_at: Instant,
+}
 
 pub struct App {
     nucleo: Nucleo<SearchEntry>,
@@ -24,6 +45,8 @@ pub struct App {
     current_filter: Option<FilterExpr>,
     filter_error: Option<String>,
     last_enter_time: Option<Instant>,
+    // Status message (clipboard feedback, etc.)
+    status_message: Option<StatusMessage>,
 }
 
 impl App {
@@ -58,33 +81,64 @@ impl App {
             current_filter: None,
             filter_error: None,
             last_enter_time: None,
+            status_message: None,
         }
+    }
+
+    /// Set a transient status message with automatic expiry
+    fn set_status(&mut self, text: impl Into<String>, message_type: MessageType, duration_ms: u64) {
+        self.status_message = Some(StatusMessage {
+            text: text.into(),
+            message_type,
+            expires_at: Instant::now() + Duration::from_millis(duration_ms),
+        });
+    }
+
+    /// Check and clear expired status messages
+    fn check_and_clear_expired_status(&mut self) {
+        let should_clear = self
+            .status_message
+            .as_ref()
+            .map(|msg| Instant::now() >= msg.expires_at)
+            .unwrap_or(false);
+        if should_clear {
+            self.status_message = None;
+        }
+    }
+
+    /// Process nucleo updates (tick to process matches)
+    fn process_nucleo_updates(&mut self) {
+        // Tick nucleo to process matches
+        self.nucleo.tick(10);
     }
 
     pub fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
         while !self.should_quit {
-            // Tick nucleo to process matches
-            self.nucleo.tick(10);
+            // Clear expired status messages
+            self.check_and_clear_expired_status();
+
+            // Process nucleo updates
+            self.process_nucleo_updates();
 
             // Get latest match results from nucleo
             let matched_items = self.collect_matched_items();
+            let matched_count = matched_items.len();
 
             // Render UI
             terminal.draw(|f| {
-                render_ui(
-                    f,
-                    &matched_items,
-                    self.selected_idx,
-                    &self.search_query,
-                    self.filtered_entries.len(), // filtered_count
-                    self.all_entries.len(),      // total_count
-                    self.filter_error.as_deref(),
-                );
+                let state = RenderState {
+                    search_query: &self.search_query,
+                    filtered_count: self.filtered_entries.len(),
+                    total_count: self.all_entries.len(),
+                    filter_error: self.filter_error.as_deref(),
+                    status_message: self.status_message.as_ref(),
+                };
+                render_ui(f, &matched_items, self.selected_idx, &state);
             })?;
 
             // Handle events
             let action = poll_event(Duration::from_millis(100))?;
-            self.handle_action(action, matched_items.len());
+            self.handle_action(action, matched_count);
         }
 
         Ok(())
@@ -129,8 +183,41 @@ impl App {
                 }
             }
             Action::CopyToClipboard => {
-                // Stub for Worker B (clipboard integration)
-                eprintln!("TODO: Copy to clipboard");
+                // Get currently matched items (fuzzy-filtered)
+                let matched_items = self.collect_matched_items();
+
+                if matched_items.is_empty() {
+                    self.set_status(
+                        "✗ No entries to copy",
+                        MessageType::Error,
+                        STATUS_ERROR_DURATION_MS,
+                    );
+                } else if self.selected_idx >= matched_items.len() {
+                    self.set_status(
+                        "✗ Invalid selection",
+                        MessageType::Error,
+                        STATUS_ERROR_DURATION_MS,
+                    );
+                } else {
+                    // Copy selected entry's display text
+                    let entry = matched_items[self.selected_idx];
+                    match copy_to_clipboard(&entry.display_text) {
+                        Ok(()) => {
+                            self.set_status(
+                                "✓ Copied to clipboard",
+                                MessageType::Success,
+                                STATUS_SUCCESS_DURATION_MS,
+                            );
+                        }
+                        Err(e) => {
+                            self.set_status(
+                                format!("✗ Clipboard error: {}", e),
+                                MessageType::Error,
+                                STATUS_ERROR_DURATION_MS,
+                            );
+                        }
+                    }
+                }
             }
             Action::ToggleFilter => {
                 // Stub for Worker C (filters)
@@ -453,12 +540,307 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_action_copy_to_clipboard() {
+    fn test_handle_action_copy_to_clipboard_empty_entries() {
+        let mut app = App::new(vec![]);
+        app.nucleo.tick(10);
+
+        app.handle_action(Action::CopyToClipboard, 0);
+
+        // Should set error status message
+        assert!(app.status_message.is_some());
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.text, "✗ No entries to copy");
+        assert_eq!(msg.message_type, MessageType::Error);
+    }
+
+    #[test]
+    fn test_handle_action_copy_to_clipboard_invalid_selection() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+        app.nucleo.tick(10);
+
+        // Set selection out of bounds
+        app.selected_idx = 999;
+
+        app.handle_action(Action::CopyToClipboard, 1);
+
+        // Should set error status message
+        assert!(app.status_message.is_some());
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.text, "✗ Invalid selection");
+        assert_eq!(msg.message_type, MessageType::Error);
+    }
+
+    #[test]
+    fn test_handle_action_copy_to_clipboard_success() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+        app.nucleo.tick(10);
+
+        app.handle_action(Action::CopyToClipboard, 1);
+
+        // Should set success status message (or error if clipboard unavailable)
+        assert!(app.status_message.is_some());
+        let msg = app.status_message.as_ref().unwrap();
+
+        // Message could be success or clipboard error depending on environment
+        if msg.message_type == MessageType::Success {
+            assert_eq!(msg.text, "✓ Copied to clipboard");
+        } else {
+            // Clipboard might not be available in test environment
+            assert!(msg.text.starts_with("✗ Clipboard error:"));
+            assert_eq!(msg.message_type, MessageType::Error);
+        }
+    }
+
+    #[test]
+    fn test_set_status_success_message() {
         let entries = vec![create_test_entry()];
         let mut app = App::new(entries);
 
-        // Just verify it doesn't panic (stub for Worker B)
-        app.handle_action(Action::CopyToClipboard, 1);
+        app.set_status("Test success", MessageType::Success, 3000);
+
+        assert!(app.status_message.is_some());
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.text, "Test success");
+        assert_eq!(msg.message_type, MessageType::Success);
+        assert!(msg.expires_at > Instant::now());
+    }
+
+    #[test]
+    fn test_set_status_error_message() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        app.set_status("Test error", MessageType::Error, 5000);
+
+        assert!(app.status_message.is_some());
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.text, "Test error");
+        assert_eq!(msg.message_type, MessageType::Error);
+        assert!(msg.expires_at > Instant::now());
+    }
+
+    #[test]
+    fn test_status_message_expiry() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Set status with 0ms duration (already expired)
+        app.set_status("Expired", MessageType::Success, 0);
+        assert!(app.status_message.is_some());
+
+        // Sleep briefly to ensure expiry time has passed
+        std::thread::sleep(Duration::from_millis(1));
+
+        // Simulate the expiry check from run loop
+        let should_clear = app
+            .status_message
+            .as_ref()
+            .map(|msg| Instant::now() >= msg.expires_at)
+            .unwrap_or(false);
+
+        assert!(should_clear);
+
+        if should_clear {
+            app.status_message = None;
+        }
+
+        assert!(app.status_message.is_none());
+    }
+
+    #[test]
+    fn test_check_and_clear_expired_status_clears_expired() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Set status with 0ms duration (already expired)
+        app.set_status("Expired", MessageType::Success, 0);
+        assert!(app.status_message.is_some());
+
+        // Sleep briefly to ensure expiry time has passed
+        std::thread::sleep(Duration::from_millis(1));
+
+        // Call the method
+        app.check_and_clear_expired_status();
+
+        // Should be cleared
+        assert!(app.status_message.is_none());
+    }
+
+    #[test]
+    fn test_check_and_clear_expired_status_keeps_active() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Set status with long duration (not expired)
+        app.set_status("Active", MessageType::Success, 10000);
+        assert!(app.status_message.is_some());
+
+        // Call the method
+        app.check_and_clear_expired_status();
+
+        // Should still be present
+        assert!(app.status_message.is_some());
+        assert_eq!(app.status_message.as_ref().unwrap().text, "Active");
+    }
+
+    #[test]
+    fn test_check_and_clear_expired_status_no_message() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // No status message set
+        assert!(app.status_message.is_none());
+
+        // Call the method (should not panic)
+        app.check_and_clear_expired_status();
+
+        // Should still be None
+        assert!(app.status_message.is_none());
+    }
+
+    #[test]
+    fn test_process_nucleo_updates_returns_all_items() {
+        let entries = vec![create_test_entry(), create_test_entry(), create_test_entry()];
+        let mut app = App::new(entries);
+
+        app.process_nucleo_updates();
+        let matched_items = app.collect_matched_items();
+
+        assert_eq!(matched_items.len(), 3);
+    }
+
+    #[test]
+    fn test_process_nucleo_updates_with_empty_entries() {
+        let mut app = App::new(vec![]);
+
+        app.process_nucleo_updates();
+        let matched_items = app.collect_matched_items();
+
+        assert_eq!(matched_items.len(), 0);
+    }
+
+    #[test]
+    fn test_process_nucleo_updates_with_search_pattern() {
+        let mut entries = vec![];
+        for i in 0..3 {
+            let mut entry = create_test_entry();
+            entry.display_text = format!("Entry {}", i);
+            entries.push(entry);
+        }
+        let mut app = App::new(entries);
+
+        // Set a search pattern
+        app.search_query = "Entry 1".to_string();
+        app.update_nucleo_pattern();
+
+        app.process_nucleo_updates();
+        let matched_items = app.collect_matched_items();
+
+        // Should match "Entry 1" specifically
+        assert_eq!(matched_items.len(), 1);
+        assert!(matched_items[0].display_text.contains("Entry 1"));
+    }
+
+    #[test]
+    fn test_update_nucleo_pattern_with_empty_query() {
+        let entries = vec![create_test_entry(), create_test_entry()];
+        let mut app = App::new(entries);
+
+        app.search_query = "".to_string();
+        app.update_nucleo_pattern();
+
+        app.process_nucleo_updates();
+        let matched_items = app.collect_matched_items();
+
+        // Empty query should match all items
+        assert_eq!(matched_items.len(), 2);
+    }
+
+    #[test]
+    fn test_update_nucleo_pattern_with_pipe_separator() {
+        let mut entries = vec![];
+        for i in 0..3 {
+            let mut entry = create_test_entry();
+            entry.display_text = format!("Test {}", i);
+            entries.push(entry);
+        }
+        let mut app = App::new(entries);
+
+        // Query with pipe - only fuzzy portion should be used for nucleo
+        app.search_query = "project:foo | Test 1".to_string();
+        app.update_nucleo_pattern();
+
+        app.process_nucleo_updates();
+        let matched_items = app.collect_matched_items();
+
+        // Should match using only "Test 1" (fuzzy portion)
+        assert_eq!(matched_items.len(), 1);
+        assert!(matched_items[0].display_text.contains("Test 1"));
+    }
+
+    #[test]
+    fn test_update_nucleo_pattern_rapid_changes() {
+        let mut entries = vec![];
+        for i in 0..5 {
+            let mut entry = create_test_entry();
+            entry.display_text = format!("Item {}", i);
+            entries.push(entry);
+        }
+        let mut app = App::new(entries);
+
+        // Rapidly change pattern multiple times
+        app.search_query = "Item 0".to_string();
+        app.update_nucleo_pattern();
+
+        app.search_query = "Item 1".to_string();
+        app.update_nucleo_pattern();
+
+        app.search_query = "Item 2".to_string();
+        app.update_nucleo_pattern();
+
+        app.process_nucleo_updates();
+        let matched_items = app.collect_matched_items();
+
+        // Should match final pattern "Item 2"
+        assert_eq!(matched_items.len(), 1);
+        assert!(matched_items[0].display_text.contains("Item 2"));
+    }
+
+    #[test]
+    fn test_update_nucleo_pattern_special_characters() {
+        let mut entry = create_test_entry();
+        entry.display_text = "Test (special) [chars]".to_string();
+        let entries = vec![entry];
+        let mut app = App::new(entries);
+
+        app.search_query = "special".to_string();
+        app.update_nucleo_pattern();
+
+        app.process_nucleo_updates();
+        let matched_items = app.collect_matched_items();
+
+        // Should match despite special characters
+        assert_eq!(matched_items.len(), 1);
+    }
+
+    #[test]
+    fn test_update_nucleo_pattern_case_insensitive() {
+        let mut entry = create_test_entry();
+        entry.display_text = "TestEntry".to_string();
+        let entries = vec![entry];
+        let mut app = App::new(entries);
+
+        // Search with lowercase should match mixed case
+        app.search_query = "testentry".to_string();
+        app.update_nucleo_pattern();
+
+        app.process_nucleo_updates();
+        let matched_items = app.collect_matched_items();
+
+        // Should match (Smart case matching)
+        assert_eq!(matched_items.len(), 1);
     }
 
     #[test]
@@ -860,5 +1242,324 @@ mod tests {
                 .contains("project1")
         );
         assert!(matches!(app.filtered_entries[0].entry_type, crate::models::EntryType::UserPrompt));
+    }
+
+    #[test]
+    fn test_filter_with_fuzzy_search_integration() {
+        let mut entries = vec![];
+        for i in 0..5 {
+            let mut entry = create_test_entry();
+            entry.display_text = format!("Test entry {}", i);
+            entry.entry_type = crate::models::EntryType::UserPrompt;
+            entries.push(entry);
+        }
+        let mut app = App::new(entries);
+
+        // Apply filter + fuzzy search
+        app.search_query = "type:user | Test entry 2".to_string();
+        app.apply_filter();
+
+        app.process_nucleo_updates();
+        let matched_items = app.collect_matched_items();
+
+        // Should match only "Test entry 2" after both filter and fuzzy
+        assert_eq!(matched_items.len(), 1);
+        assert!(matched_items[0].display_text.contains("Test entry 2"));
+    }
+
+    #[test]
+    fn test_filter_change_updates_nucleo() {
+        let mut entries = vec![create_test_entry(), create_test_entry()];
+        entries[0].entry_type = crate::models::EntryType::UserPrompt;
+        entries[0].display_text = "User entry".to_string();
+        entries[1].entry_type = crate::models::EntryType::AgentMessage;
+        entries[1].display_text = "Agent entry".to_string();
+        let mut app = App::new(entries);
+
+        // First filter: user entries only
+        app.search_query = "type:user | entry".to_string();
+        app.apply_filter();
+        app.process_nucleo_updates();
+        let matched_items = app.collect_matched_items();
+        assert_eq!(matched_items.len(), 1);
+        assert!(matched_items[0].display_text.contains("User"));
+
+        // Change filter: agent entries only
+        app.search_query = "type:agent | entry".to_string();
+        app.apply_filter();
+        app.process_nucleo_updates();
+        let matched_items = app.collect_matched_items();
+        assert_eq!(matched_items.len(), 1);
+        assert!(matched_items[0].display_text.contains("Agent"));
+    }
+
+    #[test]
+    fn test_re_inject_entries_preserves_fuzzy_pattern() {
+        let mut entries = vec![];
+        for i in 0..3 {
+            let mut entry = create_test_entry();
+            entry.display_text = format!("Item {}", i);
+            entries.push(entry);
+        }
+        let mut app = App::new(entries);
+
+        // Set fuzzy pattern first
+        app.search_query = "type:user | Item 1".to_string();
+        app.apply_filter();
+
+        app.process_nucleo_updates();
+        let matched_items = app.collect_matched_items();
+
+        // After re-injection, fuzzy pattern should still be active
+        assert_eq!(matched_items.len(), 1);
+        assert!(matched_items[0].display_text.contains("Item 1"));
+    }
+
+    #[test]
+    fn test_multiple_filter_applications() {
+        let mut entries = vec![];
+        for i in 0..10 {
+            let mut entry = create_test_entry();
+            entry.display_text = format!("Entry {}", i);
+            entry.entry_type = if i % 2 == 0 {
+                crate::models::EntryType::UserPrompt
+            } else {
+                crate::models::EntryType::AgentMessage
+            };
+            entries.push(entry);
+        }
+        let mut app = App::new(entries);
+
+        // Apply filter multiple times
+        app.search_query = "type:user | Entry".to_string();
+        app.apply_filter();
+        assert_eq!(app.filtered_entries.len(), 5);
+
+        app.search_query = "| Entry".to_string();
+        app.apply_filter();
+        assert_eq!(app.filtered_entries.len(), 10); // Reset to all
+
+        app.search_query = "type:agent | Entry".to_string();
+        app.apply_filter();
+        assert_eq!(app.filtered_entries.len(), 5);
+    }
+
+    #[test]
+    fn test_re_inject_resets_selection() {
+        let mut entries = vec![];
+        for i in 0..5 {
+            let mut entry = create_test_entry();
+            entry.display_text = format!("Entry {}", i);
+            entries.push(entry);
+        }
+        let mut app = App::new(entries);
+
+        // Select item
+        app.selected_idx = 3;
+
+        // Re-inject entries
+        app.re_inject_entries();
+
+        // Selection should be reset to 0
+        assert_eq!(app.selected_idx, 0);
+    }
+
+    #[test]
+    fn test_filter_workflow_empty_result() {
+        let mut entries = vec![create_test_entry()];
+        entries[0].entry_type = crate::models::EntryType::UserPrompt;
+        entries[0].display_text = "User entry".to_string();
+        let mut app = App::new(entries);
+
+        // Apply filter that matches nothing
+        app.search_query = "type:agent | test".to_string();
+        app.apply_filter();
+
+        app.process_nucleo_updates();
+        let matched_items = app.collect_matched_items();
+
+        // Should have zero matches
+        assert_eq!(matched_items.len(), 0);
+    }
+
+    // Edge case tests
+    #[test]
+    fn test_search_query_boundary_255_chars() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Fill to exactly 255 chars
+        for _ in 0..255 {
+            app.update_search('a');
+        }
+
+        assert_eq!(app.search_query.len(), 255);
+
+        // Should be able to add one more to reach 256
+        app.update_search('b');
+        assert_eq!(app.search_query.len(), 256);
+    }
+
+    #[test]
+    fn test_search_query_boundary_at_256_chars() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Fill to exactly 256 chars
+        for _ in 0..256 {
+            app.update_search('a');
+        }
+
+        assert_eq!(app.search_query.len(), 256);
+
+        // Should NOT be able to add more (at limit)
+        app.update_search('b');
+        assert_eq!(app.search_query.len(), 256);
+        assert!(!app.search_query.contains('b'));
+    }
+
+    #[test]
+    fn test_search_query_boundary_257_attempts() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Try to add 257 chars
+        for _ in 0..257 {
+            app.update_search('a');
+        }
+
+        // Should be capped at 256
+        assert_eq!(app.search_query.len(), 256);
+    }
+
+    #[test]
+    fn test_move_selection_with_empty_results() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Move when total is 0
+        app.move_selection(1, 0);
+        assert_eq!(app.selected_idx, 0);
+
+        app.move_selection(-1, 0);
+        assert_eq!(app.selected_idx, 0);
+    }
+
+    #[test]
+    fn test_handle_action_with_empty_state() {
+        let mut app = App::new(vec![]);
+
+        // All actions should work with empty state
+        app.handle_action(Action::MoveUp, 0);
+        app.handle_action(Action::MoveDown, 0);
+        app.handle_action(Action::PageUp, 0);
+        app.handle_action(Action::PageDown, 0);
+        app.handle_action(Action::UpdateSearch('a'), 0);
+        app.handle_action(Action::DeleteChar, 0);
+        app.handle_action(Action::ClearSearch, 0);
+
+        // Should not crash
+    }
+
+    #[test]
+    fn test_apply_filter_with_empty_entries() {
+        let mut app = App::new(vec![]);
+
+        app.search_query = "type:user | test".to_string();
+        app.apply_filter();
+
+        // Should handle gracefully
+        assert_eq!(app.filtered_entries.len(), 0);
+        assert!(app.filter_error.is_none());
+    }
+
+    #[test]
+    fn test_multiple_concurrent_status_messages() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Set first status
+        app.set_status("First message", MessageType::Success, 5000);
+        assert_eq!(app.status_message.as_ref().unwrap().text, "First message");
+
+        // Set second status (should replace first)
+        app.set_status("Second message", MessageType::Error, 3000);
+        assert_eq!(app.status_message.as_ref().unwrap().text, "Second message");
+        assert_eq!(app.status_message.as_ref().unwrap().message_type, MessageType::Error);
+    }
+
+    #[test]
+    fn test_status_message_replacement() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Success message
+        app.set_status("Success", MessageType::Success, 10000);
+        assert_eq!(app.status_message.as_ref().unwrap().message_type, MessageType::Success);
+
+        // Immediately replace with error
+        app.set_status("Error", MessageType::Error, 10000);
+        assert_eq!(app.status_message.as_ref().unwrap().text, "Error");
+        assert_eq!(app.status_message.as_ref().unwrap().message_type, MessageType::Error);
+    }
+
+    #[test]
+    fn test_empty_search_query_after_deletion() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        app.update_search('a');
+        assert_eq!(app.search_query, "a");
+
+        app.delete_char();
+        assert_eq!(app.search_query, "");
+
+        // Deleting from empty should not crash
+        app.delete_char();
+        assert_eq!(app.search_query, "");
+    }
+
+    #[test]
+    fn test_collect_matched_items_timing() {
+        let entries = vec![create_test_entry(), create_test_entry()];
+        let app = App::new(entries);
+
+        // Call multiple times in succession
+        let matched1 = app.collect_matched_items();
+        let matched2 = app.collect_matched_items();
+        let matched3 = app.collect_matched_items();
+
+        // Should return consistent results
+        assert_eq!(matched1.len(), matched2.len());
+        assert_eq!(matched2.len(), matched3.len());
+    }
+
+    #[test]
+    fn test_nucleo_pattern_with_empty_fuzzy_portion() {
+        let entries = vec![create_test_entry(), create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Query with filter but empty fuzzy portion
+        app.search_query = "type:user |".to_string();
+        app.update_nucleo_pattern();
+
+        app.process_nucleo_updates();
+        let matched_items = app.collect_matched_items();
+
+        // Empty fuzzy should match all (after filter is applied)
+        assert_eq!(matched_items.len(), 2);
+    }
+
+    #[test]
+    fn test_move_selection_single_item() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // With only 1 item, selection should stay at 0
+        app.move_selection(10, 1);
+        assert_eq!(app.selected_idx, 0);
+
+        app.move_selection(-10, 1);
+        assert_eq!(app.selected_idx, 0);
     }
 }

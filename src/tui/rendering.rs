@@ -4,10 +4,20 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 
+use super::app::{MessageType, StatusMessage};
 use super::layout::AppLayout;
 use super::timestamps::format_timestamp;
 use crate::models::{EntryType, SearchEntry};
 use crate::utils::format_path_with_tilde;
+
+/// App state needed for rendering
+pub struct RenderState<'a> {
+    pub search_query: &'a str,
+    pub filtered_count: usize,
+    pub total_count: usize,
+    pub filter_error: Option<&'a str>,
+    pub status_message: Option<&'a StatusMessage>,
+}
 
 /// Status bar entry counts
 struct StatusCounts {
@@ -21,10 +31,7 @@ pub fn render_ui(
     frame: &mut Frame,
     entries: &[&SearchEntry],
     selected_idx: usize,
-    search_query: &str,
-    filtered_count: usize,
-    total_entries: usize,
-    filter_error: Option<&str>,
+    state: &RenderState,
 ) {
     let layout = AppLayout::new(frame.area());
 
@@ -33,10 +40,15 @@ pub fn render_ui(
     render_status_bar(
         frame,
         layout.status_area,
-        StatusCounts { matched: entries.len(), filtered: filtered_count, total: total_entries },
+        StatusCounts {
+            matched: entries.len(),
+            filtered: state.filtered_count,
+            total: state.total_count,
+        },
         selected_idx,
-        search_query,
-        filter_error,
+        state.search_query,
+        state.filter_error,
+        state.status_message,
     );
 }
 
@@ -152,6 +164,7 @@ fn render_status_bar(
     selected_idx: usize,
     search_query: &str,
     filter_error: Option<&str>,
+    status_message: Option<&StatusMessage>,
 ) {
     // Parse input to extract filter portion
     let (filter_part, fuzzy_part) = if let Some(pipe_pos) = search_query.find('|') {
@@ -162,7 +175,14 @@ fn render_status_bar(
         (None, search_query)
     };
 
-    let (status_text, style) = if let Some(error) = filter_error {
+    let (status_text, style) = if let Some(msg) = status_message {
+        // Show status message with appropriate color
+        let (fg, bg) = match msg.message_type {
+            MessageType::Success => (Color::Rgb(16, 185, 129), Color::Rgb(24, 24, 27)), // Green
+            MessageType::Error => (Color::Rgb(239, 68, 68), Color::Rgb(24, 24, 27)),    // Red
+        };
+        (format!(" {} ", msg.text), Style::default().fg(fg).bg(bg))
+    } else if let Some(error) = filter_error {
         // Show error in red
         (
             format!(" [ERROR] {} ", error),
@@ -202,6 +222,7 @@ fn render_status_bar(
             parts.push("Esc: clear".to_string());
         }
         parts.push("Enter: apply".to_string());
+        parts.push("Ctrl+Y: copy".to_string());
         parts.push("Ctrl+C: quit".to_string());
 
         (
@@ -243,7 +264,14 @@ mod tests {
 
         terminal
             .draw(|f| {
-                render_ui(f, &entry_refs, 0, "test", 2, 2, None);
+                let state = RenderState {
+                    search_query: "test",
+                    filtered_count: 2,
+                    total_count: 2,
+                    filter_error: None,
+                    status_message: None,
+                };
+                render_ui(f, &entry_refs, 0, &state);
             })
             .unwrap();
 
@@ -259,7 +287,14 @@ mod tests {
 
         terminal
             .draw(|f| {
-                render_ui(f, &entries, 0, "", 0, 0, None);
+                let state = RenderState {
+                    search_query: "",
+                    filtered_count: 0,
+                    total_count: 0,
+                    filter_error: None,
+                    status_message: None,
+                };
+                render_ui(f, &entries, 0, &state);
             })
             .unwrap();
     }
@@ -343,6 +378,7 @@ mod tests {
                     5,
                     "search query",
                     None,
+                    None,
                 );
             })
             .unwrap();
@@ -362,6 +398,7 @@ mod tests {
                     StatusCounts { matched: 10, filtered: 10, total: 10 },
                     0,
                     "",
+                    None,
                     None,
                 );
             })
@@ -398,6 +435,7 @@ mod tests {
                     0,
                     "",
                     None,
+                    None,
                 );
             })
             .unwrap();
@@ -418,6 +456,7 @@ mod tests {
                     0,
                     "test query",
                     Some("Parse error: invalid filter"),
+                    None,
                 );
             })
             .unwrap();
@@ -437,6 +476,7 @@ mod tests {
                     StatusCounts { matched: 5, filtered: 8, total: 10 },
                     0,
                     "type:user | search",
+                    None,
                     None,
                 );
             })
@@ -459,6 +499,7 @@ mod tests {
                     0,
                     "search",
                     None,
+                    None,
                 );
             })
             .unwrap();
@@ -474,7 +515,14 @@ mod tests {
 
         terminal
             .draw(|f| {
-                render_ui(f, &entry_refs, 0, "invalid::: | test", 1, 1, Some("Filter parse error"));
+                let state = RenderState {
+                    search_query: "invalid::: | test",
+                    filtered_count: 1,
+                    total_count: 1,
+                    filter_error: Some("Filter parse error"),
+                    status_message: None,
+                };
+                render_ui(f, &entry_refs, 0, &state);
             })
             .unwrap();
     }
@@ -495,7 +543,133 @@ mod tests {
                     0,
                     "type:user |",
                     None,
+                    None,
                 );
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_render_status_bar_with_success_message() {
+        use std::time::{Duration, Instant};
+
+        let backend = TestBackend::new(100, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let status_msg = StatusMessage {
+            text: "✓ Copied to clipboard".to_string(),
+            message_type: MessageType::Success,
+            expires_at: Instant::now() + Duration::from_secs(3),
+        };
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_status_bar(
+                    f,
+                    area,
+                    StatusCounts { matched: 5, filtered: 5, total: 10 },
+                    0,
+                    "search",
+                    None,
+                    Some(&status_msg),
+                );
+            })
+            .unwrap();
+
+        // Verify rendering succeeded (color verification would require inspecting buffer)
+    }
+
+    #[test]
+    fn test_render_status_bar_with_error_message() {
+        use std::time::{Duration, Instant};
+
+        let backend = TestBackend::new(100, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let status_msg = StatusMessage {
+            text: "✗ No entries to copy".to_string(),
+            message_type: MessageType::Error,
+            expires_at: Instant::now() + Duration::from_secs(3),
+        };
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_status_bar(
+                    f,
+                    area,
+                    StatusCounts { matched: 0, filtered: 0, total: 10 },
+                    0,
+                    "search",
+                    None,
+                    Some(&status_msg),
+                );
+            })
+            .unwrap();
+
+        // Verify rendering succeeded (color verification would require inspecting buffer)
+    }
+
+    #[test]
+    fn test_render_status_bar_status_message_priority() {
+        use std::time::{Duration, Instant};
+
+        let backend = TestBackend::new(100, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        // Both status message and filter error present
+        let status_msg = StatusMessage {
+            text: "✓ Copied to clipboard".to_string(),
+            message_type: MessageType::Success,
+            expires_at: Instant::now() + Duration::from_secs(3),
+        };
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                // Status message should take priority over filter error
+                render_status_bar(
+                    f,
+                    area,
+                    StatusCounts { matched: 5, filtered: 5, total: 10 },
+                    0,
+                    "search",
+                    Some("This error should be hidden"),
+                    Some(&status_msg),
+                );
+            })
+            .unwrap();
+
+        // Verify rendering succeeded (status message should be shown, not filter error)
+    }
+
+    #[test]
+    fn test_render_ui_with_status_message() {
+        use std::time::{Duration, Instant};
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let entries = [create_test_entry("First entry")];
+        let entry_refs: Vec<&SearchEntry> = entries.iter().collect();
+
+        let status_msg = StatusMessage {
+            text: "✓ Copied to clipboard".to_string(),
+            message_type: MessageType::Success,
+            expires_at: Instant::now() + Duration::from_secs(3),
+        };
+
+        terminal
+            .draw(|f| {
+                let state = RenderState {
+                    search_query: "test",
+                    filtered_count: 1,
+                    total_count: 1,
+                    filter_error: None,
+                    status_message: Some(&status_msg),
+                };
+                render_ui(f, &entry_refs, 0, &state);
             })
             .unwrap();
     }
