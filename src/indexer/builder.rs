@@ -17,12 +17,15 @@
 use std::borrow::Cow;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::Result;
+use rayon::prelude::*;
 
 use crate::indexer::project_discovery::discover_projects;
 use crate::models::{ContentBlock, EntryType, MessageContent, SearchEntry};
 use crate::parsers::{parse_conversation_file, parse_history_file};
+use crate::utils::strip_ansi_codes;
 
 const ENTRY_TYPE_USER: &str = "user";
 const ENTRY_TYPE_ASSISTANT: &str = "assistant";
@@ -295,7 +298,7 @@ pub fn build_index(claude_dir: &Path) -> Result<Vec<SearchEntry>> {
                     });
                     index.push(SearchEntry {
                         entry_type: EntryType::UserPrompt,
-                        display_text: entry.display,
+                        display_text: strip_ansi_codes(&entry.display),
                         timestamp: entry.timestamp,
                         project_path,
                         session_id: entry.session_id,
@@ -310,75 +313,113 @@ pub fn build_index(claude_dir: &Path) -> Result<Vec<SearchEntry>> {
         eprintln!("Warning: history.jsonl not found at {}", history_path.display());
     }
 
-    // Discover projects and parse agent conversations
+    // Discover projects and parse agent conversations in parallel
     match discover_projects(claude_dir) {
         Ok(projects) => {
-            for project in projects {
-                for agent_file in project.agent_files {
-                    match parse_conversation_file(&agent_file) {
+            // Collect all (agent_file, project_path) pairs for parallel processing
+            let agent_tasks: Vec<(PathBuf, PathBuf)> = projects
+                .into_iter()
+                .flat_map(|project| {
+                    let project_path = project.decoded_path.clone();
+                    project
+                        .agent_files
+                        .into_iter()
+                        .map(move |agent_file| (agent_file, project_path.clone()))
+                })
+                .collect();
+
+            // Thread-safe counters for success/failure tracking
+            let success_counter = AtomicUsize::new(0);
+            let failure_counter = AtomicUsize::new(0);
+
+            // Process agent files in parallel using rayon
+            let agent_entries: Vec<Vec<SearchEntry>> = agent_tasks
+                .par_iter()
+                .filter_map(|(agent_file, project_path)| {
+                    match parse_conversation_file(agent_file) {
                         Ok(entries) => {
-                            agent_files_success += 1;
-                            for entry in entries {
-                                // Include both user and assistant messages
-                                if entry.message.role == ENTRY_TYPE_USER
-                                    || entry.message.role == ENTRY_TYPE_ASSISTANT
-                                {
-                                    // Extract text from message content using helper function
-                                    let text_parts =
-                                        extract_text_from_content(&entry.message.content);
+                            success_counter.fetch_add(1, Ordering::Relaxed);
 
-                                    let display_text = if !text_parts.is_empty() {
-                                        // Pre-allocate capacity: sum of all text lengths + newlines between them
-                                        let total_len: usize =
-                                            text_parts.iter().map(|s| s.len()).sum();
-                                        let capacity =
-                                            total_len + text_parts.len().saturating_sub(1); // +1 for each newline
+                            // Process entries for this agent file
+                            let search_entries: Vec<SearchEntry> = entries
+                                .into_iter()
+                                .filter_map(|entry| {
+                                    // Include both user and assistant messages
+                                    if entry.message.role == ENTRY_TYPE_USER
+                                        || entry.message.role == ENTRY_TYPE_ASSISTANT
+                                    {
+                                        // Extract text from message content using helper function
+                                        let text_parts =
+                                            extract_text_from_content(&entry.message.content);
 
-                                        let mut result = String::with_capacity(capacity);
-                                        result.push_str(&text_parts[0]);
-                                        for text in &text_parts[1..] {
-                                            result.push('\n');
-                                            result.push_str(text);
+                                        let display_text = if !text_parts.is_empty() {
+                                            // Pre-allocate capacity: sum of all text lengths + newlines
+                                            let total_len: usize =
+                                                text_parts.iter().map(|s| s.len()).sum();
+                                            let capacity =
+                                                total_len + text_parts.len().saturating_sub(1);
+
+                                            let mut result = String::with_capacity(capacity);
+                                            result.push_str(&text_parts[0]);
+                                            for text in &text_parts[1..] {
+                                                result.push('\n');
+                                                result.push_str(text);
+                                            }
+                                            // Sanitize ANSI escape codes to prevent terminal injection
+                                            strip_ansi_codes(&result)
+                                        } else {
+                                            String::new()
+                                        };
+
+                                        // Filter out entries with no text content
+                                        if display_text.trim().is_empty() {
+                                            return None;
                                         }
-                                        result
-                                    } else {
-                                        String::new()
-                                    };
 
-                                    // Filter out entries with no text content (e.g., images without alt text)
-                                    // Also filter whitespace-only entries (not useful for search)
-                                    if display_text.trim().is_empty() {
-                                        continue;
+                                        // Determine entry type based on message role
+                                        let entry_type =
+                                            if entry.message.role == ENTRY_TYPE_ASSISTANT {
+                                                EntryType::AgentMessage
+                                            } else {
+                                                EntryType::UserPrompt
+                                            };
+
+                                        Some(SearchEntry {
+                                            entry_type,
+                                            display_text,
+                                            timestamp: entry.timestamp,
+                                            project_path: Some(project_path.clone()),
+                                            session_id: entry.session_id,
+                                        })
+                                    } else {
+                                        None
                                     }
+                                })
+                                .collect();
 
-                                    // Determine entry type based on message role
-                                    let entry_type = if entry.message.role == ENTRY_TYPE_ASSISTANT {
-                                        EntryType::AgentMessage
-                                    } else {
-                                        EntryType::UserPrompt
-                                    };
-
-                                    index.push(SearchEntry {
-                                        entry_type,
-                                        display_text,
-                                        timestamp: entry.timestamp,
-                                        project_path: Some(project.decoded_path.clone()),
-                                        session_id: entry.session_id,
-                                    });
-                                }
-                            }
+                            Some(search_entries)
                         }
                         Err(e) => {
-                            agent_files_failed += 1;
+                            failure_counter.fetch_add(1, Ordering::Relaxed);
                             eprintln!(
                                 "Warning: Failed to parse agent file {}: {}",
                                 agent_file.display(),
                                 e
                             );
+                            None
                         }
                     }
-                }
+                })
+                .collect();
+
+            // Flatten and merge all agent entries into main index
+            for entries in agent_entries {
+                index.extend(entries);
             }
+
+            // Update counters from atomic values
+            agent_files_success = success_counter.load(Ordering::Relaxed);
+            agent_files_failed = failure_counter.load(Ordering::Relaxed);
         }
         Err(e) => {
             eprintln!("Warning: Failed to discover projects: {}", e);

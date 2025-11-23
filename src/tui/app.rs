@@ -1,3 +1,29 @@
+//! TUI application state and event handling.
+//!
+//! This module implements the main TUI application logic for the AI History Explorer.
+//! It manages:
+//!
+//! - **Fuzzy search**: Integration with `nucleo` for real-time fuzzy matching
+//! - **Filter integration**: Parses and applies filters from search query (left of `|`)
+//! - **Event loop**: Handles keyboard input and manages application lifecycle
+//! - **Status messages**: Transient feedback for clipboard operations and errors
+//! - **Dirty state tracking**: Optimized rendering only when state changes
+//!
+//! # Architecture
+//!
+//! The `App` struct owns all application state and runs the main event loop via `run()`.
+//! Input syntax: `filter_expr | fuzzy_query` where:
+//! - Filter portion (left of `|`): Applied when Enter is pressed, reduces entry set
+//! - Fuzzy portion (right of `|`): Real-time fuzzy matching via nucleo
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! let entries = vec![/* SearchEntry instances */];
+//! let mut app = App::new(entries);
+//! app.run(&mut terminal)?;
+//! ```
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -47,6 +73,9 @@ pub struct App {
     last_enter_time: Option<Instant>,
     // Status message (clipboard feedback, etc.)
     status_message: Option<StatusMessage>,
+    // Dirty state tracking for efficient rendering
+    needs_redraw: bool,
+    last_draw_time: Instant,
 }
 
 impl App {
@@ -82,6 +111,8 @@ impl App {
             filter_error: None,
             last_enter_time: None,
             status_message: None,
+            needs_redraw: true, // Initial draw needed
+            last_draw_time: Instant::now(),
         }
     }
 
@@ -92,6 +123,7 @@ impl App {
             message_type,
             expires_at: Instant::now() + Duration::from_millis(duration_ms),
         });
+        self.needs_redraw = true;
     }
 
     /// Check and clear expired status messages
@@ -114,8 +146,12 @@ impl App {
 
     pub fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
         while !self.should_quit {
-            // Clear expired status messages
+            // Clear expired status messages (marks dirty if cleared)
+            let had_status = self.status_message.is_some();
             self.check_and_clear_expired_status();
+            if had_status && self.status_message.is_none() {
+                self.needs_redraw = true;
+            }
 
             // Process nucleo updates
             self.process_nucleo_updates();
@@ -124,17 +160,23 @@ impl App {
             let matched_items = self.collect_matched_items();
             let matched_count = matched_items.len();
 
-            // Render UI
-            terminal.draw(|f| {
-                let state = RenderState {
-                    search_query: &self.search_query,
-                    filtered_count: self.filtered_entries.len(),
-                    total_count: self.all_entries.len(),
-                    filter_error: self.filter_error.as_deref(),
-                    status_message: self.status_message.as_ref(),
-                };
-                render_ui(f, &matched_items, self.selected_idx, &state);
-            })?;
+            // Draw if dirty or if it's been >100ms (for terminal resize handling)
+            let now = Instant::now();
+            let elapsed = now.duration_since(self.last_draw_time);
+            if self.needs_redraw || elapsed >= Duration::from_millis(100) {
+                terminal.draw(|f| {
+                    let state = RenderState {
+                        search_query: &self.search_query,
+                        filtered_count: self.filtered_entries.len(),
+                        total_count: self.all_entries.len(),
+                        filter_error: self.filter_error.as_deref(),
+                        status_message: self.status_message.as_ref(),
+                    };
+                    render_ui(f, &matched_items, self.selected_idx, &state);
+                })?;
+                self.needs_redraw = false;
+                self.last_draw_time = now;
+            }
 
             // Handle events
             let action = poll_event(Duration::from_millis(100))?;
@@ -161,6 +203,7 @@ impl App {
                     self.search_query.clear();
                     self.update_nucleo_pattern();
                     self.selected_idx = 0;
+                    self.needs_redraw = true;
                 }
             }
             Action::MoveUp => self.move_selection(-1, total_items),
@@ -238,8 +281,13 @@ impl App {
             return;
         }
 
+        let old_idx = self.selected_idx;
         let new_idx = (self.selected_idx as isize + delta).max(0) as usize;
         self.selected_idx = new_idx.min(total - 1);
+
+        if old_idx != self.selected_idx {
+            self.needs_redraw = true;
+        }
     }
 
     fn update_search(&mut self, c: char) {
@@ -248,13 +296,16 @@ impl App {
             self.search_query.push(c);
             self.update_nucleo_pattern();
             self.selected_idx = 0; // Reset selection on search change
+            self.needs_redraw = true;
         }
     }
 
     fn delete_char(&mut self) {
-        self.search_query.pop();
-        self.update_nucleo_pattern();
-        self.selected_idx = 0;
+        if self.search_query.pop().is_some() {
+            self.update_nucleo_pattern();
+            self.selected_idx = 0;
+            self.needs_redraw = true;
+        }
     }
 
     fn update_nucleo_pattern(&mut self) {
@@ -309,6 +360,7 @@ impl App {
                 self.filter_error = None;
                 self.filtered_entries = self.all_entries.clone();
                 self.re_inject_entries();
+                self.needs_redraw = true;
                 return;
             }
         };
@@ -323,15 +375,18 @@ impl App {
                         self.current_filter = Some(filter_expr);
                         self.filter_error = None;
                         self.re_inject_entries();
+                        self.needs_redraw = true;
                     }
                     Err(e) => {
                         self.filter_error = Some(format!("Filter error: {}", e));
+                        self.needs_redraw = true;
                     }
                 }
             }
             Err(e) => {
                 self.filter_error =
                     Some(format!("Parse error: {} | Try: project:name type:user | search", e));
+                self.needs_redraw = true;
             }
         }
     }

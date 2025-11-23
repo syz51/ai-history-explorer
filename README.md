@@ -17,6 +17,25 @@ CLI tool for searching and browsing Claude Code conversation history stored in `
 - Graceful error handling with configurable failure thresholds
 - Security-hardened path validation
 
+## Platform Support
+
+**Production Ready:**
+
+- ✅ **macOS** - Fully supported and tested
+- ✅ **Linux** - Fully supported (requires `xclip` or `wl-clipboard` for clipboard)
+
+**Not Yet Supported:**
+
+- ❌ **Windows** - Deferred to future release
+
+**Requirements:**
+
+- Rust 1.75+ (2024 edition)
+- Terminal with Unicode support
+- Linux users: Install clipboard provider
+  - X11: `sudo apt install xclip` (Debian/Ubuntu) or `sudo pacman -S xclip` (Arch)
+  - Wayland: `sudo apt install wl-clipboard` or `sudo pacman -S wl-clipboard`
+
 ## Security & Privacy
 
 **Personal Use Only**: This tool is designed for personal use to search your own Claude Code conversation history. Tool results and conversation content may contain sensitive information (API keys, credentials, file contents, etc.). Do not share search indexes or use on shared systems without understanding the privacy implications.
@@ -58,7 +77,7 @@ ai-history-explorer interactive
 
 Filters use `field:value` syntax. Combine filters with the fuzzy search using the `|` separator:
 
-```
+```text
 project:name type:user | fuzzy search terms
 ^^^^^^^^^^^^^^^         ^^^^^^^^^^^^^^^^^^^
 Filter portion           Fuzzy portion
@@ -83,7 +102,7 @@ Filter portion           Fuzzy portion
 
 **Examples:**
 
-```
+```text
 project:ai-history | implement tui
 type:user | refactor
 project:ai-history type:user | search
@@ -93,11 +112,13 @@ since:2024-01-01 | recent changes
 ### Keybindings
 
 **Navigation:**
+
 - `↑` / `Ctrl+p` - Previous entry
 - `↓` / `Ctrl+n` - Next entry
 - `Page Up` / `Page Down` - Scroll preview
 
 **Actions:**
+
 - `Enter` - Apply filters
 - `Ctrl+Y` - Copy selected entry to clipboard
 - `Esc` - Clear input (or quit if empty)
@@ -124,9 +145,29 @@ cargo test
 # Check coverage (requires 90%+)
 cargo llvm-cov --all-features --workspace
 
+# Run benchmarks
+cargo bench
+
 # Run pre-commit checks
 pre-commit run --all-files
 ```
+
+### Performance Benchmarks
+
+Criterion-based benchmarks measure parsing, indexing, fuzzy search, and filter performance.
+
+```bash
+# Run all benchmarks
+cargo bench
+
+# Run specific benchmark
+cargo bench --bench history_parsing
+
+# View HTML reports
+open target/criterion/report/index.html
+```
+
+See [docs/benchmarks.md](docs/benchmarks.md) for baseline targets and optimization guidelines.
 
 ## License
 

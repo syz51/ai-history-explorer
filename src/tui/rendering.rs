@@ -1,3 +1,31 @@
+//! TUI rendering logic and view components.
+//!
+//! This module separates rendering concerns from application state, implementing
+//! the "view" layer of the TUI architecture. It renders:
+//!
+//! - **Results list**: Scrollable list of matched entries with icons and metadata
+//! - **Preview pane**: Detailed view of selected entry (timestamp, project, content)
+//! - **Status bar**: Count indicators, active filters, keybindings, and status messages
+//!
+//! # Design Philosophy
+//!
+//! - **Pure rendering**: Functions take immutable references and render to frame
+//! - **No state mutation**: All rendering logic is side-effect-free
+//! - **Color consistency**: Uses RGB values for consistent theme across terminal emulators
+//!
+//! # Layout
+//!
+//! ```text
+//! ┌─────────────────────────┬──────────────────────┐
+//! │  Results (scrollable)   │   Preview (detail)   │
+//! │  - Entry 1              │   Timestamp: ...     │
+//! │  - Entry 2 [selected]   │   Project: ...       │
+//! │  - Entry 3              │   Content: ...       │
+//! └─────────────────────────┴──────────────────────┘
+//! │             Status Bar                          │
+//! └─────────────────────────────────────────────────┘
+//! ```
+
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};

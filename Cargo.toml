@@ -22,6 +22,7 @@ percent-encoding = "2.3"
 uuid = "1.11"
 walkdir = "2"
 arboard = "3.4"
+rayon = "1.10"
 # TUI dependencies (Phase 2)
 nucleo = "0.5"
 ratatui = "0.29"
@@ -34,3 +35,20 @@ libc = "0.2"
 tempfile = "3.14"
 assert_cmd = "2.0"
 predicates = "3.0"
+criterion = { version = "0.7", features = ["html_reports"] }
+
+[[bench]]
+name = "history_parsing"
+harness = false
+
+[[bench]]
+name = "index_building"
+harness = false
+
+[[bench]]
+name = "fuzzy_search"
+harness = false
+
+[[bench]]
+name = "filter_application"
+harness = false
