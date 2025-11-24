@@ -319,4 +319,26 @@ invalid line 3"#;
         assert_eq!(entries[1].entry_type, "assistant");
         assert_eq!(entries[2].entry_type, "user");
     }
+
+    #[test]
+    fn test_parse_conversation_fails_with_malformed_conversation_entries() {
+        // Valid JSON with type="user" but missing required ConversationEntry fields
+        // This tests the error path inside the conversation entry parsing logic
+        let mut content = String::new();
+        for i in 0..101 {
+            // Valid JSON, has type="user", but missing required "message" field
+            content.push_str(&format!(
+                r#"{{"type":"user","timestamp":{},"sessionId":"test","uuid":"uuid-{}"}}
+"#,
+                i, i
+            ));
+        }
+
+        let file = create_test_file(&content);
+        let result = parse_conversation_file(file.path());
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Too many consecutive parse errors"));
+    }
 }
