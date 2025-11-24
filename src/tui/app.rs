@@ -126,8 +126,8 @@ impl App {
         self.needs_redraw = true;
     }
 
-    /// Check and clear expired status messages
-    fn check_and_clear_expired_status(&mut self) {
+    /// Check and clear expired status messages, returns true if a message was cleared
+    fn check_and_clear_expired_status(&mut self) -> bool {
         let should_clear = self
             .status_message
             .as_ref()
@@ -135,7 +135,15 @@ impl App {
             .unwrap_or(false);
         if should_clear {
             self.status_message = None;
+            true
+        } else {
+            false
         }
+    }
+
+    /// Determine if a redraw is needed based on dirty state and elapsed time since last draw
+    fn should_redraw(&self, elapsed_since_last_draw: Duration) -> bool {
+        self.needs_redraw || elapsed_since_last_draw >= Duration::from_millis(100)
     }
 
     /// Process nucleo updates (tick to process matches)
@@ -146,10 +154,8 @@ impl App {
 
     pub fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
         while !self.should_quit {
-            // Clear expired status messages (marks dirty if cleared)
-            let had_status = self.status_message.is_some();
-            self.check_and_clear_expired_status();
-            if had_status && self.status_message.is_none() {
+            // Clear expired status messages and mark dirty if a message was cleared
+            if self.check_and_clear_expired_status() {
                 self.needs_redraw = true;
             }
 
@@ -163,7 +169,7 @@ impl App {
             // Draw if dirty or if it's been >100ms (for terminal resize handling)
             let now = Instant::now();
             let elapsed = now.duration_since(self.last_draw_time);
-            if self.needs_redraw || elapsed >= Duration::from_millis(100) {
+            if self.should_redraw(elapsed) {
                 terminal.draw(|f| {
                     let state = RenderState {
                         search_query: &self.search_query,
@@ -716,8 +722,9 @@ mod tests {
         // Sleep briefly to ensure expiry time has passed
         std::thread::sleep(Duration::from_millis(1));
 
-        // Call the method
-        app.check_and_clear_expired_status();
+        // Call the method - should return true (message was cleared)
+        let was_cleared = app.check_and_clear_expired_status();
+        assert!(was_cleared);
 
         // Should be cleared
         assert!(app.status_message.is_none());
@@ -732,8 +739,9 @@ mod tests {
         app.set_status("Active", MessageType::Success, 10000);
         assert!(app.status_message.is_some());
 
-        // Call the method
-        app.check_and_clear_expired_status();
+        // Call the method - should return false (not cleared)
+        let was_cleared = app.check_and_clear_expired_status();
+        assert!(!was_cleared);
 
         // Should still be present
         assert!(app.status_message.is_some());
@@ -748,11 +756,116 @@ mod tests {
         // No status message set
         assert!(app.status_message.is_none());
 
-        // Call the method (should not panic)
-        app.check_and_clear_expired_status();
+        // Call the method - should return false (nothing to clear)
+        let was_cleared = app.check_and_clear_expired_status();
+        assert!(!was_cleared);
 
         // Should still be None
         assert!(app.status_message.is_none());
+    }
+
+    #[test]
+    fn test_should_redraw_when_dirty() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Mark as dirty
+        app.needs_redraw = true;
+
+        // Should need redraw even with 0 elapsed time
+        assert!(app.should_redraw(Duration::from_millis(0)));
+    }
+
+    #[test]
+    fn test_should_redraw_after_100ms() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Not dirty
+        app.needs_redraw = false;
+
+        // Should not redraw with small elapsed time
+        assert!(!app.should_redraw(Duration::from_millis(50)));
+
+        // Should redraw after 100ms even when not dirty (for resize handling)
+        assert!(app.should_redraw(Duration::from_millis(100)));
+        assert!(app.should_redraw(Duration::from_millis(150)));
+    }
+
+    #[test]
+    fn test_should_redraw_not_needed() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Not dirty and short elapsed time
+        app.needs_redraw = false;
+
+        assert!(!app.should_redraw(Duration::from_millis(0)));
+        assert!(!app.should_redraw(Duration::from_millis(50)));
+        assert!(!app.should_redraw(Duration::from_millis(99)));
+    }
+
+    #[test]
+    fn test_should_redraw_exactly_at_threshold() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        app.needs_redraw = false;
+
+        // Exactly 100ms should trigger redraw
+        assert!(app.should_redraw(Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn test_should_redraw_dirty_overrides_time() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        app.needs_redraw = true;
+
+        // Dirty flag should override time check - should redraw even with 0ms
+        assert!(app.should_redraw(Duration::from_millis(0)));
+    }
+
+    #[test]
+    fn test_status_expiry_marks_dirty() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Set status with 0ms duration (already expired)
+        app.set_status("Expired", MessageType::Success, 0);
+        app.needs_redraw = false; // Clear dirty flag
+
+        // Sleep to ensure expiry
+        std::thread::sleep(Duration::from_millis(1));
+
+        // Simulate the run loop logic
+        if app.check_and_clear_expired_status() {
+            app.needs_redraw = true;
+        }
+
+        // Should be marked dirty after status expiry
+        assert!(app.needs_redraw);
+        assert!(app.status_message.is_none());
+    }
+
+    #[test]
+    fn test_status_not_expired_doesnt_mark_dirty() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Set status with long duration
+        app.set_status("Active", MessageType::Success, 10000);
+        app.needs_redraw = false; // Clear dirty flag
+
+        // Simulate the run loop logic
+        if app.check_and_clear_expired_status() {
+            app.needs_redraw = true;
+        }
+
+        // Should not be marked dirty since status didn't expire
+        assert!(!app.needs_redraw);
+        assert!(app.status_message.is_some());
     }
 
     #[test]
