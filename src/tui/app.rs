@@ -1,3 +1,29 @@
+//! TUI application state and event handling.
+//!
+//! This module implements the main TUI application logic for the AI History Explorer.
+//! It manages:
+//!
+//! - **Fuzzy search**: Integration with `nucleo` for real-time fuzzy matching
+//! - **Filter integration**: Parses and applies filters from search query (left of `|`)
+//! - **Event loop**: Handles keyboard input and manages application lifecycle
+//! - **Status messages**: Transient feedback for clipboard operations and errors
+//! - **Dirty state tracking**: Optimized rendering only when state changes
+//!
+//! # Architecture
+//!
+//! The `App` struct owns all application state and runs the main event loop via `run()`.
+//! Input syntax: `filter_expr | fuzzy_query` where:
+//! - Filter portion (left of `|`): Applied when Enter is pressed, reduces entry set
+//! - Fuzzy portion (right of `|`): Real-time fuzzy matching via nucleo
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! let entries = vec![/* SearchEntry instances */];
+//! let mut app = App::new(entries);
+//! app.run(&mut terminal)?;
+//! ```
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -47,6 +73,9 @@ pub struct App {
     last_enter_time: Option<Instant>,
     // Status message (clipboard feedback, etc.)
     status_message: Option<StatusMessage>,
+    // Dirty state tracking for efficient rendering
+    needs_redraw: bool,
+    last_draw_time: Instant,
 }
 
 impl App {
@@ -82,6 +111,8 @@ impl App {
             filter_error: None,
             last_enter_time: None,
             status_message: None,
+            needs_redraw: true, // Initial draw needed
+            last_draw_time: Instant::now(),
         }
     }
 
@@ -92,10 +123,11 @@ impl App {
             message_type,
             expires_at: Instant::now() + Duration::from_millis(duration_ms),
         });
+        self.needs_redraw = true;
     }
 
-    /// Check and clear expired status messages
-    fn check_and_clear_expired_status(&mut self) {
+    /// Check and clear expired status messages, returns true if a message was cleared
+    fn check_and_clear_expired_status(&mut self) -> bool {
         let should_clear = self
             .status_message
             .as_ref()
@@ -103,7 +135,15 @@ impl App {
             .unwrap_or(false);
         if should_clear {
             self.status_message = None;
+            true
+        } else {
+            false
         }
+    }
+
+    /// Determine if a redraw is needed based on dirty state and elapsed time since last draw
+    fn should_redraw(&self, elapsed_since_last_draw: Duration) -> bool {
+        self.needs_redraw || elapsed_since_last_draw >= Duration::from_millis(100)
     }
 
     /// Process nucleo updates (tick to process matches)
@@ -114,8 +154,10 @@ impl App {
 
     pub fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
         while !self.should_quit {
-            // Clear expired status messages
-            self.check_and_clear_expired_status();
+            // Clear expired status messages and mark dirty if a message was cleared
+            if self.check_and_clear_expired_status() {
+                self.needs_redraw = true;
+            }
 
             // Process nucleo updates
             self.process_nucleo_updates();
@@ -124,17 +166,23 @@ impl App {
             let matched_items = self.collect_matched_items();
             let matched_count = matched_items.len();
 
-            // Render UI
-            terminal.draw(|f| {
-                let state = RenderState {
-                    search_query: &self.search_query,
-                    filtered_count: self.filtered_entries.len(),
-                    total_count: self.all_entries.len(),
-                    filter_error: self.filter_error.as_deref(),
-                    status_message: self.status_message.as_ref(),
-                };
-                render_ui(f, &matched_items, self.selected_idx, &state);
-            })?;
+            // Draw if dirty or if it's been >100ms (for terminal resize handling)
+            let now = Instant::now();
+            let elapsed = now.duration_since(self.last_draw_time);
+            if self.should_redraw(elapsed) {
+                terminal.draw(|f| {
+                    let state = RenderState {
+                        search_query: &self.search_query,
+                        filtered_count: self.filtered_entries.len(),
+                        total_count: self.all_entries.len(),
+                        filter_error: self.filter_error.as_deref(),
+                        status_message: self.status_message.as_ref(),
+                    };
+                    render_ui(f, &matched_items, self.selected_idx, &state);
+                })?;
+                self.needs_redraw = false;
+                self.last_draw_time = now;
+            }
 
             // Handle events
             let action = poll_event(Duration::from_millis(100))?;
@@ -161,6 +209,7 @@ impl App {
                     self.search_query.clear();
                     self.update_nucleo_pattern();
                     self.selected_idx = 0;
+                    self.needs_redraw = true;
                 }
             }
             Action::MoveUp => self.move_selection(-1, total_items),
@@ -238,8 +287,13 @@ impl App {
             return;
         }
 
+        let old_idx = self.selected_idx;
         let new_idx = (self.selected_idx as isize + delta).max(0) as usize;
         self.selected_idx = new_idx.min(total - 1);
+
+        if old_idx != self.selected_idx {
+            self.needs_redraw = true;
+        }
     }
 
     fn update_search(&mut self, c: char) {
@@ -248,13 +302,16 @@ impl App {
             self.search_query.push(c);
             self.update_nucleo_pattern();
             self.selected_idx = 0; // Reset selection on search change
+            self.needs_redraw = true;
         }
     }
 
     fn delete_char(&mut self) {
-        self.search_query.pop();
-        self.update_nucleo_pattern();
-        self.selected_idx = 0;
+        if self.search_query.pop().is_some() {
+            self.update_nucleo_pattern();
+            self.selected_idx = 0;
+            self.needs_redraw = true;
+        }
     }
 
     fn update_nucleo_pattern(&mut self) {
@@ -309,6 +366,7 @@ impl App {
                 self.filter_error = None;
                 self.filtered_entries = self.all_entries.clone();
                 self.re_inject_entries();
+                self.needs_redraw = true;
                 return;
             }
         };
@@ -323,15 +381,18 @@ impl App {
                         self.current_filter = Some(filter_expr);
                         self.filter_error = None;
                         self.re_inject_entries();
+                        self.needs_redraw = true;
                     }
                     Err(e) => {
                         self.filter_error = Some(format!("Filter error: {}", e));
+                        self.needs_redraw = true;
                     }
                 }
             }
             Err(e) => {
                 self.filter_error =
                     Some(format!("Parse error: {} | Try: project:name type:user | search", e));
+                self.needs_redraw = true;
             }
         }
     }
@@ -661,8 +722,9 @@ mod tests {
         // Sleep briefly to ensure expiry time has passed
         std::thread::sleep(Duration::from_millis(1));
 
-        // Call the method
-        app.check_and_clear_expired_status();
+        // Call the method - should return true (message was cleared)
+        let was_cleared = app.check_and_clear_expired_status();
+        assert!(was_cleared);
 
         // Should be cleared
         assert!(app.status_message.is_none());
@@ -677,8 +739,9 @@ mod tests {
         app.set_status("Active", MessageType::Success, 10000);
         assert!(app.status_message.is_some());
 
-        // Call the method
-        app.check_and_clear_expired_status();
+        // Call the method - should return false (not cleared)
+        let was_cleared = app.check_and_clear_expired_status();
+        assert!(!was_cleared);
 
         // Should still be present
         assert!(app.status_message.is_some());
@@ -693,11 +756,116 @@ mod tests {
         // No status message set
         assert!(app.status_message.is_none());
 
-        // Call the method (should not panic)
-        app.check_and_clear_expired_status();
+        // Call the method - should return false (nothing to clear)
+        let was_cleared = app.check_and_clear_expired_status();
+        assert!(!was_cleared);
 
         // Should still be None
         assert!(app.status_message.is_none());
+    }
+
+    #[test]
+    fn test_should_redraw_when_dirty() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Mark as dirty
+        app.needs_redraw = true;
+
+        // Should need redraw even with 0 elapsed time
+        assert!(app.should_redraw(Duration::from_millis(0)));
+    }
+
+    #[test]
+    fn test_should_redraw_after_100ms() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Not dirty
+        app.needs_redraw = false;
+
+        // Should not redraw with small elapsed time
+        assert!(!app.should_redraw(Duration::from_millis(50)));
+
+        // Should redraw after 100ms even when not dirty (for resize handling)
+        assert!(app.should_redraw(Duration::from_millis(100)));
+        assert!(app.should_redraw(Duration::from_millis(150)));
+    }
+
+    #[test]
+    fn test_should_redraw_not_needed() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Not dirty and short elapsed time
+        app.needs_redraw = false;
+
+        assert!(!app.should_redraw(Duration::from_millis(0)));
+        assert!(!app.should_redraw(Duration::from_millis(50)));
+        assert!(!app.should_redraw(Duration::from_millis(99)));
+    }
+
+    #[test]
+    fn test_should_redraw_exactly_at_threshold() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        app.needs_redraw = false;
+
+        // Exactly 100ms should trigger redraw
+        assert!(app.should_redraw(Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn test_should_redraw_dirty_overrides_time() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        app.needs_redraw = true;
+
+        // Dirty flag should override time check - should redraw even with 0ms
+        assert!(app.should_redraw(Duration::from_millis(0)));
+    }
+
+    #[test]
+    fn test_status_expiry_marks_dirty() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Set status with 0ms duration (already expired)
+        app.set_status("Expired", MessageType::Success, 0);
+        app.needs_redraw = false; // Clear dirty flag
+
+        // Sleep to ensure expiry
+        std::thread::sleep(Duration::from_millis(1));
+
+        // Simulate the run loop logic
+        if app.check_and_clear_expired_status() {
+            app.needs_redraw = true;
+        }
+
+        // Should be marked dirty after status expiry
+        assert!(app.needs_redraw);
+        assert!(app.status_message.is_none());
+    }
+
+    #[test]
+    fn test_status_not_expired_doesnt_mark_dirty() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Set status with long duration
+        app.set_status("Active", MessageType::Success, 10000);
+        app.needs_redraw = false; // Clear dirty flag
+
+        // Simulate the run loop logic
+        if app.check_and_clear_expired_status() {
+            app.needs_redraw = true;
+        }
+
+        // Should not be marked dirty since status didn't expire
+        assert!(!app.needs_redraw);
+        assert!(app.status_message.is_some());
     }
 
     #[test]
@@ -1430,6 +1598,79 @@ mod tests {
 
         // Should be capped at 256
         assert_eq!(app.search_query.len(), 256);
+    }
+
+    #[test]
+    fn test_dirty_state_tracking_on_status_set() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Set status should mark dirty
+        app.needs_redraw = false;
+        app.set_status("Test", MessageType::Success, 1000);
+        assert!(app.needs_redraw, "Setting status should mark dirty");
+    }
+
+    #[test]
+    fn test_dirty_state_on_search_operations() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Update search should mark dirty
+        app.needs_redraw = false;
+        app.update_search('a');
+        assert!(app.needs_redraw, "Update search should mark dirty");
+
+        // Delete char should mark dirty
+        app.needs_redraw = false;
+        app.delete_char();
+        assert!(app.needs_redraw, "Delete char should mark dirty");
+
+        // Delete from empty should not mark dirty
+        app.search_query.clear();
+        app.needs_redraw = false;
+        app.delete_char();
+        assert!(!app.needs_redraw, "Delete from empty should not mark dirty");
+    }
+
+    #[test]
+    fn test_dirty_state_on_selection_move() {
+        let entries = vec![create_test_entry(), create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Move selection should mark dirty when index changes
+        app.needs_redraw = false;
+        app.move_selection(1, 2);
+        assert!(app.needs_redraw, "Move selection should mark dirty");
+        assert_eq!(app.selected_idx, 1);
+
+        // No movement should not mark dirty (at bounds)
+        app.needs_redraw = false;
+        app.move_selection(1, 2); // Try to go past end
+        assert!(!app.needs_redraw, "No movement should not mark dirty");
+        assert_eq!(app.selected_idx, 1); // Still at same position
+    }
+
+    #[test]
+    fn test_dirty_state_on_clear_search() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+        app.search_query = "test".to_string();
+
+        // Clear search should mark dirty
+        app.needs_redraw = false;
+        app.handle_action(Action::ClearSearch, 1);
+        assert!(app.needs_redraw, "Clear search should mark dirty");
+        assert_eq!(app.search_query, "", "Search should be cleared");
+    }
+
+    #[test]
+    fn test_needs_redraw_initial_state() {
+        let entries = vec![create_test_entry()];
+        let app = App::new(entries);
+
+        // Should need redraw initially
+        assert!(app.needs_redraw, "Should need initial draw");
     }
 
     #[test]

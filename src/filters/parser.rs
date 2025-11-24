@@ -1,3 +1,57 @@
+//! Filter query parser for search entry filtering.
+//!
+//! Parses user-provided filter expressions into an AST ([`FilterExpr`]) for evaluation.
+//! Supports field-based filtering with operators and quoted values.
+//!
+//! # Syntax
+//!
+//! ```text
+//! filter_expr := field_filter (operator field_filter)*
+//! field_filter := field_name:value | field_name:"quoted value"
+//! operator := AND | OR (case-insensitive)
+//! field_name := project | type | since (case-insensitive)
+//! ```
+//!
+//! # Supported Fields
+//!
+//! - `project:path` - Filter by project path (supports ~ expansion and partial matches)
+//! - `type:user|agent` - Filter by entry type (user prompts or agent messages)
+//! - `since:YYYY-MM-DD` - Filter by timestamp (entries on or after date)
+//!
+//! # Examples
+//!
+//! ```rust
+//! # use ai_history_explorer::filters::parser::parse_filter;
+//! // Single filter
+//! let expr = parse_filter("project:ai-explorer").unwrap();
+//!
+//! // Multiple filters with implicit AND (different fields)
+//! let expr = parse_filter("project:ai-explorer type:user").unwrap();
+//!
+//! // Explicit OR operator
+//! let expr = parse_filter("type:user OR type:agent").unwrap();
+//!
+//! // Same field gets implicit OR
+//! let expr = parse_filter("project:foo project:bar").unwrap();
+//!
+//! // Quoted values for spaces
+//! let expr = parse_filter("project:\"my project\"").unwrap();
+//!
+//! // Complex query
+//! let expr = parse_filter("project:ai-explorer AND type:user since:2024-01-01").unwrap();
+//! ```
+//!
+//! # Operator Precedence
+//!
+//! - Implicit operators (no keyword): AND for different fields, OR for same field
+//! - Explicit operators (AND/OR keywords): Always respected
+//!
+//! # Validation
+//!
+//! - `type` values must be "user" or "agent" (case-insensitive)
+//! - `since` dates must be YYYY-MM-DD format and semantically valid
+//! - Empty field names or values are rejected
+
 use anyhow::{Context, Result, anyhow};
 use chrono::NaiveDate;
 
