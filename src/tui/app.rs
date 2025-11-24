@@ -1488,6 +1488,79 @@ mod tests {
     }
 
     #[test]
+    fn test_dirty_state_tracking_on_status_set() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Set status should mark dirty
+        app.needs_redraw = false;
+        app.set_status("Test", MessageType::Success, 1000);
+        assert!(app.needs_redraw, "Setting status should mark dirty");
+    }
+
+    #[test]
+    fn test_dirty_state_on_search_operations() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Update search should mark dirty
+        app.needs_redraw = false;
+        app.update_search('a');
+        assert!(app.needs_redraw, "Update search should mark dirty");
+
+        // Delete char should mark dirty
+        app.needs_redraw = false;
+        app.delete_char();
+        assert!(app.needs_redraw, "Delete char should mark dirty");
+
+        // Delete from empty should not mark dirty
+        app.search_query.clear();
+        app.needs_redraw = false;
+        app.delete_char();
+        assert!(!app.needs_redraw, "Delete from empty should not mark dirty");
+    }
+
+    #[test]
+    fn test_dirty_state_on_selection_move() {
+        let entries = vec![create_test_entry(), create_test_entry()];
+        let mut app = App::new(entries);
+
+        // Move selection should mark dirty when index changes
+        app.needs_redraw = false;
+        app.move_selection(1, 2);
+        assert!(app.needs_redraw, "Move selection should mark dirty");
+        assert_eq!(app.selected_idx, 1);
+
+        // No movement should not mark dirty (at bounds)
+        app.needs_redraw = false;
+        app.move_selection(1, 2); // Try to go past end
+        assert!(!app.needs_redraw, "No movement should not mark dirty");
+        assert_eq!(app.selected_idx, 1); // Still at same position
+    }
+
+    #[test]
+    fn test_dirty_state_on_clear_search() {
+        let entries = vec![create_test_entry()];
+        let mut app = App::new(entries);
+        app.search_query = "test".to_string();
+
+        // Clear search should mark dirty
+        app.needs_redraw = false;
+        app.handle_action(Action::ClearSearch, 1);
+        assert!(app.needs_redraw, "Clear search should mark dirty");
+        assert_eq!(app.search_query, "", "Search should be cleared");
+    }
+
+    #[test]
+    fn test_needs_redraw_initial_state() {
+        let entries = vec![create_test_entry()];
+        let app = App::new(entries);
+
+        // Should need redraw initially
+        assert!(app.needs_redraw, "Should need initial draw");
+    }
+
+    #[test]
     fn test_move_selection_with_empty_results() {
         let entries = vec![create_test_entry()];
         let mut app = App::new(entries);
