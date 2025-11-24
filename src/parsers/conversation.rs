@@ -30,14 +30,50 @@ pub fn parse_conversation_file(path: &Path) -> Result<Vec<ConversationEntry>> {
 
         total_lines += 1;
 
-        match serde_json::from_str::<ConversationEntry>(&line) {
-            Ok(entry) => {
-                entries.push(entry);
-                consecutive_errors = 0; // Reset on success
+        // Pre-filter: only parse conversation entries (user/assistant)
+        // Skip non-conversation entries like file-history-snapshot, summary, system
+        match serde_json::from_str::<serde_json::Value>(&line) {
+            Ok(value) => {
+                // Check if this is a conversation entry
+                let is_conversation = value
+                    .get("type")
+                    .and_then(|t| t.as_str())
+                    .map(|t| t == "user" || t == "assistant")
+                    .unwrap_or(false);
+
+                if is_conversation {
+                    // Attempt to parse as ConversationEntry
+                    match serde_json::from_value::<ConversationEntry>(value) {
+                        Ok(entry) => {
+                            entries.push(entry);
+                            consecutive_errors = 0; // Reset on success
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "Warning: Failed to parse line {} in {}: {}",
+                                line_num + 1,
+                                path.display(),
+                                e
+                            );
+                            skipped_count += 1;
+                            consecutive_errors += 1;
+
+                            // Bail if too many consecutive errors
+                            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                                bail!(
+                                    "Too many consecutive parse errors ({}) in {} - file may be corrupted",
+                                    consecutive_errors,
+                                    path.display()
+                                );
+                            }
+                        }
+                    }
+                }
+                // Silently skip non-conversation entries (e.g., file-history-snapshot, summary, system)
             }
             Err(e) => {
                 eprintln!(
-                    "Warning: Failed to parse line {} in {}: {}",
+                    "Warning: Failed to parse JSON on line {} in {}: {}",
                     line_num + 1,
                     path.display(),
                     e
@@ -257,5 +293,30 @@ invalid line 3"#;
         let entries = result.unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].message.role, "assistant");
+    }
+
+    #[test]
+    fn test_parse_conversation_skips_non_conversation_entry_types() {
+        // Mix of conversation entries (user/assistant) and non-conversation entries
+        // (file-history-snapshot, summary, system) - only conversation entries should be parsed
+        let content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Hello"}]},"timestamp":1234567890,"sessionId":"550e8400-e29b-41d4-a716-446655440000","uuid":"550e8400-e29b-41d4-a716-446655440001"}
+{"type":"file-history-snapshot","messageId":"61b36c7f-934e-4ecd-89f3-52bb4f164952","snapshot":{"messageId":"61b36c7f-934e-4ecd-89f3-52bb4f164952","trackedFileBackups":{},"timestamp":"2025-11-21T07:11:39.534Z"},"isSnapshotUpdate":false}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hi there"}]},"timestamp":"2024-01-15T10:30:00Z","sessionId":"550e8400-e29b-41d4-a716-446655440000","uuid":"550e8400-e29b-41d4-a716-446655440002"}
+{"type":"summary","summary":"Fix platform-specific libc type casting in Clippy","leafUuid":"e030aae0-c04a-4bb4-8d8d-49019e5c9c2b"}
+{"type":"system","subtype":"local_command","content":"<command-name>/usage</command-name>","level":"info","timestamp":"2025-11-24T02:19:28.748Z","uuid":"c803f9b5-907c-4e90-946e-07e65f6dece3"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Goodbye"}]},"timestamp":1234567892,"sessionId":"550e8400-e29b-41d4-a716-446655440000","uuid":"550e8400-e29b-41d4-a716-446655440003"}"#;
+
+        let file = create_test_file(content);
+        let result = parse_conversation_file(file.path());
+
+        assert!(result.is_ok());
+        let entries = result.unwrap();
+
+        // Should only parse 3 conversation entries (2 user + 1 assistant)
+        // and silently skip 3 non-conversation entries (file-history-snapshot, summary, system)
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].entry_type, "user");
+        assert_eq!(entries[1].entry_type, "assistant");
+        assert_eq!(entries[2].entry_type, "user");
     }
 }

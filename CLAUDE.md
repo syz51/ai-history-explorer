@@ -97,8 +97,8 @@ All checks enforced in CI as backup.
   - Uses graceful degradation: skips malformed lines, fails if >50% of lines fail or >100 consecutive errors
   - Custom deserializers handle timestamp formats and optional session IDs
 - `indexer/`: Builds searchable index combining user prompts + agent messages
-  - `project_discovery`: Scans ~/.claude/projects/ for encoded project directories
-  - `builder`: Aggregates entries from history.jsonl + all agent files, validates >50% success rate
+  - `project_discovery`: Scans ~/.claude/projects/ for encoded project directories, finds all *.jsonl conversation files (both legacy agent-*.jsonl and newer UUID.jsonl formats)
+  - `builder`: Aggregates entries from history.jsonl + all conversation files, validates >50% success rate
 - `models/`: Core data structures (HistoryEntry, ConversationEntry, SearchEntry, ProjectInfo)
 - `utils/paths`: Path encoding/decoding for Claude's percent-encoded project directories
   - Validates paths to prevent traversal attacks (rejects `..` components, non-absolute paths)
@@ -113,15 +113,21 @@ Project directories use percent encoding (e.g., `/Users/foo/bar` → `-Users%2Ff
 
 **Entry types:**
 
-- `EntryType::UserPrompt`: User messages from both history.jsonl and agent conversation files
-- `EntryType::AgentMessage`: Currently filtered out (not included in index)
+- `EntryType::UserPrompt`: User messages from both history.jsonl and conversation files (displayed with 👤 icon in TUI)
+- `EntryType::AgentMessage`: Assistant/agent responses from conversation files (displayed with 🤖 icon in TUI)
 
 **Data flow:**
 
 1. Parse history.jsonl → extract user prompts
 2. Discover projects in ~/.claude/projects/
-3. Parse agent conversation files → extract user messages (type="user")
+3. Parse all conversation files (*.jsonl - includes agent-*.jsonl and UUID.jsonl) → extract both user messages (type="user") and agent messages (type="assistant")
 4. Combine all entries → sort by timestamp (newest first)
-5. Return unified SearchEntry index
+5. Return unified SearchEntry index with both user prompts (👤) and agent messages (🤖)
+
+**File formats:**
+- Legacy format: `agent-*.jsonl` (older Claude Code conversations)
+- Current format: `<UUID>.jsonl` (newer Claude Code conversations with session snapshots)
+- Both formats contain conversation entries with type="user" and type="assistant"
+- UUID format may also contain non-conversation entries (e.g., "file-history-snapshot") which are gracefully skipped
 
 - For cargo.toml, the latest edition is 2024

@@ -11,11 +11,28 @@ const MAX_PROJECTS: usize = 1000;
 /// Maximum number of agent files per project (security: prevent resource exhaustion)
 const MAX_AGENT_FILES_PER_PROJECT: usize = 1000;
 
-/// Discover all projects in ~/.claude/projects/ and find agent-*.jsonl files
+/// Check if a filename matches UUID pattern (8-4-4-4-12 hex digits with hyphens)
+/// Example: 550e8400-e29b-41d4-a716-446655440000
+fn is_uuid_pattern(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('-').collect();
+    if parts.len() != 5 {
+        return false;
+    }
+    // Check if parts have correct lengths and are hex digits
+    parts[0].len() == 8
+        && parts[1].len() == 4
+        && parts[2].len() == 4
+        && parts[3].len() == 4
+        && parts[4].len() == 12
+        && parts.iter().all(|p| p.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// Discover all projects in ~/.claude/projects/ and find conversation files
 ///
 /// Scans the Claude projects directory for project subdirectories, decoding their
-/// percent-encoded names back to file system paths and collecting all agent conversation
-/// files within each project.
+/// percent-encoded names back to file system paths and collecting all conversation
+/// files (*.jsonl) within each project. Supports both legacy agent-*.jsonl and newer
+/// UUID.jsonl formats.
 ///
 /// # Arguments
 ///
@@ -90,7 +107,8 @@ pub fn discover_projects(claude_dir: &Path) -> Result<Vec<ProjectInfo>> {
             );
         }
 
-        // Find all agent-*.jsonl files in this project directory
+        // Find all *.jsonl conversation files in this project directory
+        // Includes both legacy agent-*.jsonl and newer UUID.jsonl formats
         let mut agent_files = Vec::new();
         match safe_open_dir(&path) {
             Ok(files) => {
@@ -110,7 +128,17 @@ pub fn discover_projects(claude_dir: &Path) -> Result<Vec<ProjectInfo>> {
                     let file_path = file.path();
                     if let Some(filename) = file_path.file_name() {
                         let filename_str = filename.to_string_lossy();
-                        if filename_str.starts_with("agent-") && filename_str.ends_with(".jsonl") {
+                        if filename_str.ends_with(".jsonl") {
+                            // Only include agent-*.jsonl (legacy) or UUID.jsonl (new format)
+                            let stem = filename_str.strip_suffix(".jsonl").unwrap();
+                            let is_agent_file = stem.starts_with("agent-");
+                            let is_uuid_file = is_uuid_pattern(stem);
+
+                            if !is_agent_file && !is_uuid_file {
+                                // Skip non-conversation JSONL files (e.g., history.jsonl, other.jsonl)
+                                continue;
+                            }
+
                             // Security: Enforce maximum agent files per project limit
                             if agent_files.len() >= MAX_AGENT_FILES_PER_PROJECT {
                                 bail!(
@@ -256,29 +284,42 @@ mod tests {
     }
 
     #[test]
-    fn test_discover_projects_skips_non_agent_files() {
+    fn test_discover_projects_skips_non_jsonl_files() {
         let claude_dir = create_test_claude_dir();
         let projects_dir = claude_dir.path().join("projects");
         fs::create_dir(&projects_dir).expect("Failed to create projects dir");
 
-        // Create project with agent and non-agent files
+        // Create project with jsonl and non-jsonl files
         let project_dir = projects_dir.join("-Users%2Ftest%2Fproject");
         fs::create_dir(&project_dir).expect("Failed to create project dir");
 
         // Create various files
         fs::File::create(project_dir.join("agent-123.jsonl")).expect("Failed to create file");
+        fs::File::create(project_dir.join("550e8400-e29b-41d4-a716-446655440000.jsonl"))
+            .expect("Failed to create file");
+        fs::File::create(project_dir.join("other-file.jsonl")).expect("Failed to create file");
         fs::File::create(project_dir.join("history.jsonl")).expect("Failed to create file");
         fs::File::create(project_dir.join("readme.txt")).expect("Failed to create file");
-        fs::File::create(project_dir.join("other-file.jsonl")).expect("Failed to create file");
+        fs::File::create(project_dir.join("config.json")).expect("Failed to create file");
 
         let result = discover_projects(claude_dir.path());
         assert!(result.is_ok());
         let projects = result.unwrap();
 
         assert_eq!(projects.len(), 1);
-        // Should only include agent-*.jsonl files
-        assert_eq!(projects[0].agent_files.len(), 1);
-        assert!(projects[0].agent_files[0].ends_with("agent-123.jsonl"));
+        // Should only include agent-*.jsonl and UUID.jsonl formats, skipping other .jsonl files
+        assert_eq!(projects[0].agent_files.len(), 2);
+
+        let filenames: Vec<String> = projects[0]
+            .agent_files
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .collect();
+        assert!(filenames.contains(&"agent-123.jsonl".to_string()));
+        assert!(filenames.contains(&"550e8400-e29b-41d4-a716-446655440000.jsonl".to_string()));
+        // Should NOT include other-file.jsonl or history.jsonl
+        assert!(!filenames.contains(&"other-file.jsonl".to_string()));
+        assert!(!filenames.contains(&"history.jsonl".to_string()));
     }
 
     #[test]
