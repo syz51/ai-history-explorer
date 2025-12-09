@@ -13,3 +13,6 @@ coverage_output.txt
 .DS_Store
 
 ~
+
+check_index.rs
+check_index
